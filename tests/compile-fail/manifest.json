@@ -1,0 +1,72 @@
+{
+  "SwapQuestions.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "old",
+    "edited"
+  ],
+  "SwapScore.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "old",
+    "edited"
+  ],
+  "SwapWeights.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "old",
+    "edited"
+  ],
+  "SameLengthQuestions.idr": [
+    "right hand side of bad",
+    "Mismatch between"
+  ],
+  "WrongSkill.idr": [
+    "right hand side of bad",
+    "Mismatch between"
+  ],
+  "NoApproval.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "Pending",
+    "Approved"
+  ],
+  "ForgeApproval.idr": [
+    "right hand side of bad",
+    "Approval",
+    "private"
+  ],
+  "ForgeScore.idr": [
+    "right hand side of bad",
+    "Computed",
+    "private"
+  ],
+  "MissingAudit.idr": [
+    "right hand side of bad",
+    "Mismatch between"
+  ],
+  "WrongRevision.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "old",
+    "revised"
+  ],
+  "SwapStore.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "old",
+    "edited"
+  ],
+  "WrongContainerReply.idr": [
+    "right hand side of bad",
+    "Mismatch between"
+  ],
+  "BrokenSequence.idr": [
+    "right hand side of bad",
+    "Mismatch between"
+  ],
+  "BadAmalgamation.idr": [
+    "right hand side of bad",
+    "Mismatch between"
+  ]
+}

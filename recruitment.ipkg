@@ -1,0 +1,20 @@
+package recruitment
+version = 0.1.0
+sourcedir = "src"
+modules = Recruitment.Container,
+          Recruitment.Core.Common,
+          Recruitment.Core.Requisition,
+          Recruitment.Core.Advert,
+          Recruitment.Core.Application,
+          Recruitment.Core.Score,
+          Recruitment.Application.Ports,
+          Recruitment.Application.Scoring,
+          Recruitment.Application.Spine,
+          Recruitment.Application.Intake,
+          Recruitment.Adapters.Memory,
+          Recruitment.Adapters.MockCV,
+          Recruitment.Application.Workflow,
+          Recruitment.Adapters.Cases,
+          Recruitment.Adapters.Codec,
+          Recruitment.Example
+opts = "--total -Werror"

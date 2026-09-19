@@ -1,0 +1,6 @@
+package recruitment-demo
+version = 0.1.0
+sourcedir = "src"
+main = Main
+executable = recruitment-demo
+opts = "-Werror"

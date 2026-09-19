@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+if [ -n "${IDRIS2:-}" ]; then
+  exec "$IDRIS2" "$@"
+fi
+project_compiler="$(dirname "$0")/../build/toolchain/bin/idris2"
+if [ -x "$project_compiler" ]; then
+  exec "$project_compiler" "$@"
+fi
+exec idris2 "$@"

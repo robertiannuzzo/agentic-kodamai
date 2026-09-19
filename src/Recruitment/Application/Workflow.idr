@@ -1,0 +1,100 @@
+module Recruitment.Application.Workflow
+
+import public Recruitment.Core.Advert
+
+%default total
+
+public export
+data Stage : Type where
+  AwaitingReview : (r : Req) -> Pending r -> Stage
+  Accepted : (r : Req) -> Approved r -> Stage
+  NeedsRework : (r : Req) -> Held r -> Stage
+  Rejected : (r : Req) -> Evidence DeclinedEvent -> Stage
+  Advertising : Advert -> Stage
+
+public export
+AuditRow : Type
+AuditRow = (event : Event ** Evidence event)
+
+public export
+record CaseRecord where
+  constructor MkCaseRecord
+  reference : Nat
+  generation : Nat
+  stage : Stage
+  history : List AuditRow
+
+||| commit compares the expected generation and persists the complete aggregate,
+||| including its audit trail. Nothing means insert, Just n means compare-and-swap.
+public export
+record CaseRepository (state : Type) where
+  constructor MkCaseRepository
+  nextReference : state -> Nat
+  load : Nat -> state -> Either DomainError CaseRecord
+  commit : Maybe Nat -> CaseRecord -> state -> Either DomainError state
+
+export
+start : CaseRepository state -> Context -> Fields -> state ->
+        Either DomainError (CaseRecord, state)
+start repo c fields state = do
+  draft <- newDraft fields
+  (r ** pending) <- submit c (repo.nextReference state) draft
+  let row = MkCaseRecord r.reference 0 (AwaitingReview r pending)
+              [(Submitted ** submissionEvidence pending)]
+  updated <- repo.commit Nothing row state
+  Right (row, updated)
+
+loadCurrent : CaseRepository state -> Nat -> Nat -> state -> Either DomainError CaseRecord
+loadCurrent repo ref expected state = do
+  row <- repo.load ref state
+  if row.generation == expected then Right row else Left StaleVersion
+
+saveNext : CaseRepository state -> CaseRecord -> Stage -> List AuditRow -> state ->
+           Either DomainError (CaseRecord, state)
+saveNext repo old stage evidence state = do
+  let row = MkCaseRecord old.reference (S old.generation) stage (old.history ++ evidence)
+  updated <- repo.commit (Just old.generation) row state
+  Right (row, updated)
+
+export
+review : CaseRepository state -> Nat -> Nat -> Context -> Decision -> state ->
+         Either DomainError (CaseRecord, state)
+review repo ref expected c decision state = do
+  row <- loadCurrent repo ref expected state
+  case row.stage of
+    AwaitingReview r pending => do
+      ruling <- decide r pending c decision
+      case ruling of
+        Granted approval => saveNext repo row (Accepted r approval)
+                            [(ApprovedEvent ** approvalEvidence approval)] state
+        Denied ev => saveNext repo row (Rejected r ev) [(DeclinedEvent ** ev)] state
+        Deferred held => saveNext repo row (NeedsRework r held)
+                           [(HeldEvent ** holdEvidence held)] state
+    _ => Left WrongStage
+
+||| Rework is a revision of the same reference; it returns to review.
+export
+resubmit : CaseRepository state -> Nat -> Nat -> Context -> Fields -> state ->
+           Either DomainError (CaseRecord, state)
+resubmit repo ref expected c fields state = do
+  row <- loadCurrent repo ref expected state
+  case row.stage of
+    NeedsRework r held => do
+      (draft, revised) <- revise r held c fields
+      (newReq ** pending) <- submit c ref draft
+      saveNext repo row (AwaitingReview newReq pending)
+        [(Revised ** revised), (Submitted ** submissionEvidence pending)] state
+    _ => Left WrongStage
+
+||| One advert per requisition in phase 1; its ID is the requisition reference.
+export
+advertise : CaseRepository state -> Nat -> Nat -> Context -> List Question -> List Skill ->
+            state -> Either DomainError (CaseRecord, state)
+advertise repo ref expected c questions skills state = do
+  row <- loadCurrent repo ref expected state
+  case row.stage of
+    Accepted r approval => do
+      advert <- publish r approval c ref questions skills
+      saveNext repo row (Advertising advert)
+        [(AdvertCreated ** advertEvidence advert)] state
+    _ => Left WrongStage

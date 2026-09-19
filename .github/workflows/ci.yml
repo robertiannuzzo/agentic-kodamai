@@ -1,0 +1,20 @@
+name: recruitment-core
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install bootstrap prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends chezscheme libgmp-dev build-essential curl python3
+      - name: Build pinned Idris compiler in project
+        run: make bootstrap
+      - name: Hygiene, totality, compiler fixtures, runtime tests and CLI smoke
+        run: make test

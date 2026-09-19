@@ -1,0 +1,38 @@
+#!/bin/sh
+# Install the pinned compiler inside this checkout; do not change global tools.
+set -eu
+cd "$(dirname "$0")/.."
+. ./toolchain.env
+project_dir=$(pwd)
+case "$project_dir" in
+  *[[:space:]]*)
+    echo "Upstream Idris bootstrap needs a checkout path without whitespace. Use IDRIS2 to select an existing compiler here." >&2
+    exit 1
+    ;;
+esac
+prefix="$project_dir/build/toolchain"
+source_dir="$project_dir/build/bootstrap-source"
+archive="$project_dir/build/idris2-source.tar.gz"
+if [ -x "$prefix/bin/idris2" ] && \
+   [ "$("$prefix/bin/idris2" --version)" = "Idris 2, version $IDRIS2_VERSION" ]; then
+  echo "Pinned compiler already installed at $prefix/bin/idris2"
+  exit 0
+fi
+mkdir -p "$source_dir"
+curl --fail --location --retry 3 \
+  "https://codeload.github.com/idris-lang/Idris2/tar.gz/${IDRIS2_COMMIT}" -o "$archive"
+python3 - "$archive" "$IDRIS2_SOURCE_SHA256" <<'PY'
+from pathlib import Path
+import hashlib
+import sys
+actual = hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest()
+if actual != sys.argv[2]:
+    raise SystemExit(f'Compiler archive checksum mismatch: {actual}')
+PY
+tar -xzf "$archive" -C "$source_dir" --strip-components=1
+scheme_command=${SCHEME:-chezscheme}
+version_tag=$(echo "$IDRIS2_COMMIT" | cut -c1-9)
+make -C "$source_dir" bootstrap SCHEME="$scheme_command" PREFIX="$prefix" VERSION_TAG="$version_tag"
+make -C "$source_dir" install SCHEME="$scheme_command" PREFIX="$prefix" VERSION_TAG="$version_tag"
+test "$("$prefix/bin/idris2" --version)" = "Idris 2, version $IDRIS2_VERSION"
+echo "Installed $prefix/bin/idris2"
