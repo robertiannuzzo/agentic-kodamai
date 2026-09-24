@@ -1,3 +1,4 @@
+import { ArrowRight, Briefcase, CircleCheck, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { ApplicationSubmission, OpenAdvert } from "../../../packages/contracts/src/index";
 import { applyToAdvert, listOpenAdverts, withdrawApplication, type DemoIdentity } from "./api";
@@ -29,13 +30,20 @@ function ApplyForm({
   }
 
   return (
-    <form className="field-form" onSubmit={(event) => void submit(event)}>
-      <label>
-        Full name
-        <input required value={candidateName} onChange={(event) => setCandidateName(event.target.value)} />
-      </label>
-      <fieldset className="schema-group">
-        <legend>Screening questions</legend>
+    <form className="form apply-form" onSubmit={(event) => void submit(event)}>
+      <fieldset className="group">
+        <legend>
+          <span className="step-number">01</span> About you
+        </legend>
+        <label>
+          Full name
+          <input required value={candidateName} onChange={(event) => setCandidateName(event.target.value)} />
+        </label>
+      </fieldset>
+      <fieldset className="group">
+        <legend>
+          <span className="step-number">02</span> Screening questions
+        </legend>
         {advert.questions.map((q) => (
           <label key={q.questionId}>
             {q.prompt}
@@ -46,8 +54,10 @@ function ApplyForm({
           </label>
         ))}
       </fieldset>
-      <fieldset className="schema-group">
-        <legend>Years of experience</legend>
+      <fieldset className="group">
+        <legend>
+          <span className="step-number">03</span> Years of experience
+        </legend>
         <div className="form-grid">
           {advert.skills.map((s) => (
             <label key={s.skillId}>
@@ -63,44 +73,48 @@ function ApplyForm({
           ))}
         </div>
       </fieldset>
-      <label>
-        CV
-        <textarea
-          required
-          rows={8}
-          value={cvText}
-          onChange={(event) => setCvText(event.target.value)}
-          placeholder="Paste the text of your CV"
-        />
-      </label>
-      <section className="privacy-notice" aria-labelledby={`privacy-${advert.reference}`}>
-        <h2 id={`privacy-${advert.reference}`}>How we use your application</h2>
-        <ul>
-          <li>
-            Kodamai processes your application to take steps you have asked for before a possible employment
-            contract. We ask only for what we need to assess it.
-          </li>
-          <li>
-            Your answers and experience are scored by a fixed, versioned rule set. A person reviews every
-            application and makes every decision; the score never decides on its own.
-          </li>
-          <li>
-            We keep your application for {advert.retentionDays} days, then remove your personal data
-            automatically. You can withdraw and erase it at any time from this page.
-          </li>
-        </ul>
-      </section>
-      <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={acknowledged}
-          onChange={(event) => setAcknowledged(event.target.checked)}
-        />
-        <span>I have read how my application will be used.</span>
-      </label>
-      <div className="button-row">
-        <button className="primary" disabled={busy || !acknowledged} type="submit">
+      <fieldset className="group">
+        <legend>
+          <span className="step-number">04</span> CV and privacy
+        </legend>
+        <label>
+          CV
+          <textarea
+            required
+            rows={8}
+            value={cvText}
+            onChange={(event) => setCvText(event.target.value)}
+            placeholder="Paste the text of your CV"
+          />
+        </label>
+        <section className="privacy-notice" aria-labelledby={`privacy-${advert.reference}`}>
+          <h3 id={`privacy-${advert.reference}`}>
+            <ShieldCheck size={16} aria-hidden="true" /> How we use your application
+          </h3>
+          <ul>
+            <li>
+              Kodamai processes your application to take steps you have asked for before a possible employment
+              contract. We ask only for what we need to assess it.
+            </li>
+            <li>
+              Your answers and experience are scored by a fixed, versioned rule set. A person reviews every
+              application and makes every decision; the score never decides on its own.
+            </li>
+            <li>
+              We keep your application for {advert.retentionDays} days, then remove your personal data
+              automatically. You can withdraw and erase it at any time from this page.
+            </li>
+          </ul>
+        </section>
+        <label className="checkbox">
+          <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
+          <span>I have read how my application will be used.</span>
+        </label>
+      </fieldset>
+      <div className="actions">
+        <button className="button primary" disabled={busy || !acknowledged} type="submit">
           {busy ? "Sending…" : "Submit application"}
+          <ArrowRight size={16} aria-hidden="true" />
         </button>
       </div>
     </form>
@@ -185,17 +199,22 @@ export function CandidateWorkspace({
             <h1>Open roles</h1>
           </div>
         </div>
-        {loading ? <p className="empty">Loading…</p> : null}
+        {loading ? (
+          <div className="skeleton-list" aria-hidden="true">
+            <span />
+            <span />
+          </div>
+        ) : null}
         {!loading && adverts.length === 0 ? <p className="empty">No roles are open right now.</p> : null}
-        <nav className="requisition-list" aria-label="Open roles">
+        <nav className="req-list" aria-label="Open roles">
           {adverts.map((a) => (
             <button
-              className={a.reference === selected ? "selected" : ""}
+              className={a.reference === selected ? "req-row selected" : "req-row"}
               key={a.reference}
               onClick={() => setSelected(a.reference)}
             >
-              <span className={`status-dot ${a.applied ? "approved" : "advertising"}`} />
-              <span>
+              <span className={`dot ${a.applied ? "emerald" : "sky"}`} aria-hidden="true" />
+              <span className="req-row-text">
                 <strong>{a.role}</strong>
                 <small>
                   {a.department}
@@ -206,45 +225,64 @@ export function CandidateWorkspace({
           ))}
         </nav>
       </aside>
-      <main className="main-panel">
+      <main className="main">
         {error === null ? null : (
-          <div className="error-banner" role="alert">
+          <div className="banner" role="alert">
             <span>{error}</span>
-            <button onClick={() => void load()}>Reload</button>
+            <button className="button small" onClick={() => void load()}>
+              Reload
+            </button>
           </div>
         )}
         {advert === null ? (
           <section className="welcome">
-            <p className="eyebrow">Careers</p>
-            <h1>No open roles</h1>
-            <p>Roles appear here once a recruiter publishes an approved requisition.</p>
+            <p className="eyebrow">
+              <span className="pulse" aria-hidden="true" /> Careers at Kodamai
+            </p>
+            <h1 className="display">No open roles right now.</h1>
+            <p className="lede">Roles appear here as soon as a recruiter publishes an approved requisition.</p>
           </section>
         ) : (
-          <section className="content-card">
-            <p className="eyebrow">{advert.department}</p>
-            <h1>{advert.role}</h1>
+          <section className="panel role-panel">
+            <p className="eyebrow">
+              <Briefcase size={13} aria-hidden="true" /> {advert.department} · Open role
+            </p>
+            <h1 className="display">{advert.role}</h1>
+            <div className="chips">
+              {advert.skills.map(({ skillId, keyword }) => (
+                <span className="chip neutral" key={skillId}>
+                  {keyword}
+                </span>
+              ))}
+            </div>
             <p className="lede">
-              We look for experience with {advert.skills.map(({ keyword }) => keyword).join(", ")}.
+              {advert.questions.length} short screening questions and your experience with{" "}
+              {advert.skills.map(({ keyword }) => keyword).join(", ")}. Every application is read by a person.
             </p>
             {advert.applied ? (
               <>
                 <div className="notice" role="status">
-                  <strong>Application received.</strong> A member of the team will review it. You can apply to each
-                  role once.
+                  <CircleCheck size={18} aria-hidden="true" />
+                  <div>
+                    <strong>Application received.</strong> A member of the team will review it. You can apply to
+                    each role once.
+                  </div>
                 </div>
-                <div className="button-row withdraw-row">
+                <div className="actions withdraw-row">
                   {confirmingWithdrawal ? (
                     <>
-                      <span>This erases your name, email, CV and answers.</span>
-                      <button className="danger" disabled={busy} onClick={() => void withdraw()}>
+                      <span className="muted">This erases your name, email, CV and answers.</span>
+                      <button className="button danger" disabled={busy} onClick={() => void withdraw()}>
                         Confirm withdrawal
                       </button>
-                      <button disabled={busy} onClick={() => setConfirmingWithdrawal(false)}>
+                      <button className="button" disabled={busy} onClick={() => setConfirmingWithdrawal(false)}>
                         Keep my application
                       </button>
                     </>
                   ) : (
-                    <button onClick={() => setConfirmingWithdrawal(true)}>Withdraw and erase my application</button>
+                    <button className="button ghost" onClick={() => setConfirmingWithdrawal(true)}>
+                      Withdraw and erase my application
+                    </button>
                   )}
                 </div>
               </>
