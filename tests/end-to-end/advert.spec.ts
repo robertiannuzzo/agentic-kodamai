@@ -101,23 +101,27 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(applications.nth(0).getByTestId("total")).toHaveText("46 / 49");
   await expect(applications.nth(1)).toContainText("Grace Hopper");
   await expect(applications.nth(1).getByTestId("total")).toHaveText("20 / 49");
+  // Selecting a row opens the applicant detail panel with the workings.
+  const detail = page.getByRole("region", { name: "Applicant detail" });
   await applications.nth(0).getByText("Ada Lovelace").click();
-  await expect(applications.nth(0)).toContainText("keywords5");
-  await expect(applications.nth(0)).toContainText("experience18");
-  await expect(applications.nth(0)).toContainText("policy:recruitment-score-v1");
-  await expect(page.getByText("They are not a hiring decision", { exact: false })).toBeVisible();
+  await expect(detail).toContainText("keywords5");
+  await expect(detail).toContainText("experience18");
+  await expect(detail).toContainText("policy:recruitment-score-v1");
+  await expect(page.getByText("They are not a hiring decision", { exact: false }).first()).toBeVisible();
 
   // A person decides: shortlist Ada; rejecting Grace needs a reason.
-  await applications.nth(0).getByLabel("Private note").fill("Strong compiler background.");
-  await applications.nth(0).getByRole("button", { name: "Shortlist" }).click();
+  await detail.getByLabel("Private note").fill("Strong compiler background.");
+  await detail.getByRole("button", { name: "Shortlist" }).click();
   await expect(applications.nth(0).getByTestId("decision")).toHaveText("Shortlisted");
-  await expect(applications.nth(0)).toContainText("application:1;total:46;disposition:shortlist");
+  await expect(detail).toContainText("application:1;total:46;disposition:shortlist");
   await applications.nth(1).getByText("Grace Hopper").click();
-  await applications.nth(1).getByRole("button", { name: "Reject" }).click();
-  await expect(applications.nth(1).getByRole("alert")).toContainText("Give a reason");
-  await applications.nth(1).getByLabel("Reason (required to reject)").fill("Needs more typed programming.");
-  await applications.nth(1).getByRole("button", { name: "Reject" }).click();
+  await detail.getByRole("button", { name: "Reject" }).click();
+  await expect(detail.getByRole("alert")).toContainText("Give a reason");
+  await detail.getByLabel("Reason (required to reject)").fill("Needs more typed programming.");
+  await detail.getByRole("button", { name: "Reject" }).click();
   await expect(applications.nth(1).getByTestId("decision")).toHaveText("Rejected");
+  await detail.getByRole("button", { name: "Close applicant detail" }).click();
+  await expect(detail).toHaveCount(0);
 
   // Grace withdraws; her personal data is erased but the decision record remains.
   await viewAs(page, "Candidate");
@@ -137,12 +141,14 @@ test("an approved requisition is advertised, applied to and reviewed with score 
 
   // Hire the shortlisted candidate: a people record with provenance, and the requisition fills.
   await applications.nth(0).getByText("Ada Lovelace").click();
-  await applications.nth(0).getByLabel("Start date").fill("2026-11-02");
-  await applications.nth(0).getByRole("button", { name: "Hire" }).click();
-  await expect(applications.nth(0).getByTestId("decision")).toHaveText("Hired · EMP-0001");
+  await detail.getByLabel("Start date").fill("2026-11-02");
+  await detail.getByRole("button", { name: "Hire" }).click();
   await expect(page.getByTestId("stage")).toHaveText("Filled");
+  await expect(applications.nth(0).getByTestId("decision")).toHaveText("Hired · EMP-0001");
+  await expect(page.getByRole("list", { name: "Recruitment chain" })).toContainText("1 of 1");
+  await page.getByRole("tab", { name: /People/ }).click();
   const provenance = page.getByRole("list", { name: "Provenance of Ada Lovelace" });
-  await expect(provenance).toContainText("Scored 46 under recruitment-score-v1");
+  await expect(provenance).toContainText("46 under recruitment-score-v1");
   await expect(provenance).toContainText("disposition:shortlist");
   await expect(provenance).toContainText("application:1");
 

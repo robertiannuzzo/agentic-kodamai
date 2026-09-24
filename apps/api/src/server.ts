@@ -346,6 +346,10 @@ function contentType(path: string): string {
       return "text/css; charset=utf-8";
     case ".svg":
       return "image/svg+xml";
+    case ".woff2":
+      return "font/woff2";
+    case ".woff":
+      return "font/woff";
     default:
       return "application/octet-stream";
   }
