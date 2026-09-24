@@ -323,17 +323,35 @@ transitionTests =
               fails "self-review-forbidden" (run transitionAgent (Just sent.row, Review 5 1 context Approve)))))
   ]
 
+shortlistedHire : (a : Advert) -> Starter -> Either DomainError Bool
+shortlistedHire a starter = do
+  (receipt, _) <- applyAndScore a memoryRepository extractor context exampleRaw empty
+  outcome <- reviewApplication a receipt.score reviewer Shortlist
+  case outcome of
+    NotAdvanced _ => Right False
+    Advanced shortlisted => do
+      (employee ** _) <- hire a receipt.score shortlisted reviewer starter
+      let (source ** app) = provenanceOf employee
+      Right (applicationId app == 1 && advertId source == advertId a &&
+             (hireEvidence employee).detail == "advert:1;application:1")
+
 hireTests : List (String, Bool)
 hireTests =
-  [ ("hire returns employee with application provenance", withAdvert (\a => do
+  [ ("hire of a shortlisted application carries provenance", withAdvert (\a =>
+       shortlistedHire a (MkStarter "Ada" 20)))
+  , ("hire requires a legal name", withAdvert (\a => Right (fails "invalid-field:legal-name"
+       (shortlistedHire a (MkStarter " " 20)))))
+  , ("review evidence names application, total and disposition", withAdvert (\a => do
        (receipt, _) <- applyAndScore a memoryRepository extractor context exampleRaw empty
-       (employee ** _) <- hire a receipt.score reviewer (MkStarter "Ada" 20)
-       let (source ** app) = provenanceOf employee
-       Right (applicationId app == 1 && advertId source == advertId a &&
-              (hireEvidence employee).detail == "advert:1;application:1")))
-  , ("hire requires a legal name", withAdvert (\a => do
+       outcome <- reviewApplication a receipt.score reviewer (Reject "Needs more Idris")
+       case outcome of
+         NotAdvanced ev => Right (ev.detail ==
+           "application:1;total:46;disposition:reject" &&
+           ev.context.actor == "reviewer")
+         Advanced _ => Right False))
+  , ("rejection needs a reason", withAdvert (\a => do
        (receipt, _) <- applyAndScore a memoryRepository extractor context exampleRaw empty
-       Right (fails "invalid-field:legal-name" (hire a receipt.score reviewer (MkStarter " " 20)))))
+       Right (fails "reason-required" (reviewApplication a receipt.score reviewer (Reject " ")))))
   ]
 
 publishedCase : Either DomainError CaseRecord
@@ -400,7 +418,7 @@ slice2Tests =
        Right (totalScore receipt.score == 46 && breakdown receipt.score == MkBreakdown 5 18 20 3 &&
               receipt.evidence.detail == "advert:1;application:1;policy:recruitment-score-v1")))
   , ("kernel routes an intake to the intake branch", withAdvert (\a => do
-       receipt <- run (kernelAgent cvLeaf) (Right (a ** MkIntake context exampleRaw))
+       receipt <- run (kernelAgent cvLeaf) (Right (Left (a ** MkIntake context exampleRaw)))
        Right (totalScore receipt.score == 46)))
   , ("intake validates before invoking the leaf", withAdvert (\a => Right (fails "answers-do-not-match-questions"
        (run (intakeAgent (extractionAgent failingExtractor))
@@ -413,10 +431,52 @@ slice2Tests =
        (run (intakeAgent cvLeaf) (a ** MkIntake (MkContext " " 1) exampleRaw)))))
   ]
 
+storedFor : (a : Advert) -> Either DomainError StoredReceipt
+storedFor a = do
+  receipt <- run (intakeAgent cvLeaf) (a ** MkIntake context exampleRaw)
+  Right (MkStoredReceipt (breakdown receipt.score) receipt.evidence)
+
+assessment : StoredReceipt -> Disposition -> Assessment
+assessment stored d = MkAssessment (MkIntake context exampleRaw) stored reviewer d
+
+isShortlist : ReviewOutcome s -> Bool
+isShortlist (Advanced _) = True
+isShortlist (NotAdvanced _) = False
+
+assessTests : List (String, Bool)
+assessTests =
+  [ ("assessment re-derives the score before recording a shortlist", withAdvert (\a => do
+       stored <- storedFor a
+       (s ** outcome) <- run (assessAgent cvLeaf) (a ** assessment stored Shortlist)
+       Right (totalScore s == 46 && isShortlist outcome &&
+              (outcomeEvidence outcome).detail == "application:1;total:46;disposition:shortlist")))
+  , ("kernel routes an assessment to its branch", withAdvert (\a => do
+       stored <- storedFor a
+       (s ** outcome) <- run (kernelAgent cvLeaf) (Right (Right (a ** assessment stored Shortlist)))
+       Right (isShortlist outcome)))
+  , ("altered stored workings are not reviewed", withAdvert (\a => do
+       stored <- storedFor a
+       let altered = MkStoredReceipt (MkBreakdown 5 18 20 30) stored.evidence
+       Right (fails "invalid-history" (run (assessAgent cvLeaf) (a ** assessment altered Shortlist)))))
+  , ("altered stored evidence is not reviewed", withAdvert (\a => do
+       stored <- storedFor a
+       let altered = MkStoredReceipt stored.breakdown
+                       (MkEvidence context 1 0 "advert:1;application:1;policy:recruitment-score-v0")
+       Right (fails "invalid-history" (run (assessAgent cvLeaf) (a ** assessment altered Shortlist)))))
+  , ("erased inputs cannot be re-scored for review", withAdvert (\a => do
+       stored <- storedFor a
+       let erased = MkAssessment (MkIntake context (MkRawApplication 1 exampleCV [] []))
+                      stored reviewer Shortlist
+       Right (fails "answers-do-not-match-questions" (run (assessAgent cvLeaf) (a ** erased)))))
+  , ("assessment rejection still needs a reason", withAdvert (\a => do
+       stored <- storedFor a
+       Right (fails "reason-required" (run (assessAgent cvLeaf) (a ** assessment stored (Reject ""))))))
+  ]
+
 covering
 main : IO ()
 main = do
-  let tests = containerTests ++ workflowTests ++ dutyAndReplayTests ++ transitionTests ++ hireTests ++ slice2Tests ++ schemaTests ++ intakeTests ++ codecTests ++ additionalTests ++ map generatedTest [0..100]
+  let tests = containerTests ++ workflowTests ++ dutyAndReplayTests ++ transitionTests ++ hireTests ++ slice2Tests ++ assessTests ++ schemaTests ++ intakeTests ++ codecTests ++ additionalTests ++ map generatedTest [0..100]
   traverse_ (\(name, passed) => putStrLn ((if passed then "PASS " else "FAIL ") ++ name)) tests
   let failures = filter (\(_, passed) => not passed) tests
   putStrLn (show (length tests) ++ " checks, " ++ show (length failures) ++ " failures")

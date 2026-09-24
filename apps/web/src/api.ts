@@ -2,7 +2,9 @@ import type {
   ApiError,
   ApplicationAcknowledgement,
   ApplicationRecord,
+  ApplicationReview,
   ApplicationSubmission,
+  Disposition,
   DemoRole,
   OpenAdvert,
   RequisitionCase,
@@ -33,6 +35,7 @@ async function request<T>(
       ...init.headers
     }
   });
+  if (response.status === 204) return undefined as T;
   const value = (await response.json()) as T | ApiError;
   if (!response.ok) {
     const code = "error" in (value as ApiError) ? (value as ApiError).error : "request-failed";
@@ -132,4 +135,26 @@ export function applyToAdvert(
     method: "POST",
     body: JSON.stringify(submission)
   });
+}
+
+export function reviewApplication(
+  identity: DemoIdentity,
+  record: ApplicationRecord,
+  review: { disposition: Disposition; reason: string; note: string }
+): Promise<ApplicationReview> {
+  return request(identity, `/api/requisitions/${record.reference}/applications/${record.applicationId}/review`, {
+    method: "POST",
+    body: JSON.stringify(review)
+  });
+}
+
+export function eraseApplication(identity: DemoIdentity, record: ApplicationRecord, reason: string): Promise<void> {
+  return request(identity, `/api/requisitions/${record.reference}/applications/${record.applicationId}/erase`, {
+    method: "POST",
+    body: JSON.stringify({ reason })
+  });
+}
+
+export function withdrawApplication(identity: DemoIdentity, reference: number): Promise<void> {
+  return request(identity, `/api/adverts/${reference}/applications/mine`, { method: "DELETE" });
 }

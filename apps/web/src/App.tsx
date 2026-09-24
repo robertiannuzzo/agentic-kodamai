@@ -16,6 +16,7 @@ import {
   type DemoIdentity
 } from "./api";
 import { CandidateWorkspace } from "./candidate";
+import { describeError } from "./messages";
 import { AdvertPanel, ApplicationsPanel, PublishAdvertForm } from "./recruiting";
 
 const emptyFields: RequisitionFields = {
@@ -34,21 +35,6 @@ const stageLabels: Record<RequisitionCase["stage"], string> = {
   declined: "Declined",
   advertising: "Advertising"
 };
-
-const errorMessages: Record<string, string> = {
-  "stale-version": "This requisition changed. Reload and try again.",
-  "self-review-forbidden": "You submitted this requisition, so someone else must review it.",
-  "reason-required": "Give a reason when declining or requesting changes.",
-  "wrong-stage": "That action is not available at this stage.",
-  "already-applied": "You have already applied for this role.",
-  "consent-required": "Please confirm consent before applying.",
-  "answers-do-not-match-questions": "Answer every screening question.",
-  "experience-does-not-match-skills": "Give your years of experience for every skill."
-};
-
-function describeError(code: string): string {
-  return errorMessages[code] ?? code;
-}
 
 const roles: ReadonlyArray<{ role: DemoRole; label: string }> = [
   { role: "requester", label: "Requester" },
@@ -209,12 +195,12 @@ function AuditTimeline({ row }: { row: RequisitionCase }) {
         </div>
         <span>{row.history.length} recorded events</span>
       </div>
-      <ol className="timeline">
+      <ol className="timeline" aria-label="Audit timeline">
         {[...row.history].reverse().map((entry, index) => (
           <li key={`${entry.tick}-${entry.event}-${index}`}>
             <span className="timeline-marker" aria-hidden="true" />
             <div>
-              <strong>{entry.event.replaceAll("-", " ")}</strong>
+              <strong data-testid="event">{entry.event.replaceAll("-", " ")}</strong>
               <p>{entry.detail}</p>
               <small>
                 {entry.actor} · revision {entry.revision} · {formatTime(entry.tick)}
@@ -502,7 +488,9 @@ export function App() {
                       <p className="eyebrow">REQ-{String(selected.reference).padStart(4, "0")}</p>
                       <h1>{selected.role}</h1>
                     </div>
-                    <span className={`status-badge ${selected.stage}`}>{stageLabels[selected.stage]}</span>
+                    <span className={`status-badge ${selected.stage}`} data-testid="stage">
+                      {stageLabels[selected.stage]}
+                    </span>
                   </div>
                   <div className="facts">
                     <div>
@@ -511,7 +499,7 @@ export function App() {
                     </div>
                     <div>
                       <span>Headcount</span>
-                      <strong>{selected.headcount}</strong>
+                      <strong data-testid="headcount">{selected.headcount}</strong>
                     </div>
                     <div>
                       <span>Budget</span>
@@ -522,7 +510,7 @@ export function App() {
                     </div>
                     <div>
                       <span>Revision</span>
-                      <strong>{selected.revision}</strong>
+                      <strong data-testid="revision">{selected.revision}</strong>
                     </div>
                   </div>
                   <div className="justification">

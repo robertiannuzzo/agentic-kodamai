@@ -1,6 +1,6 @@
 # Agentic Kodamai recruitment
 
-A recruitment system built on the **mathematical containers** of *Containers for Typed Agentic AI*: a type of prompts, a reply type that depends on each prompt, and handlers that compose. It types the design note's five-link spine (requisition → approval → advert → application → score) and adds the stage-2 hire morphism. A web app runs the whole spine for real: requesters raise requisitions, approvers review them, recruiters publish frozen adverts, candidates apply, and recruiters review scored applications. Every write goes through one Idris agent, `kernelAgent`, for the container `Sum TransitionC IntakeC`.
+A recruitment system built on the **mathematical containers** of *Containers for Typed Agentic AI*: a type of prompts, a reply type that depends on each prompt, and handlers that compose. It types the design note's five-link spine (requisition → approval → advert → application → score) and adds the stage-2 hire morphism. A web app runs the whole spine for real: requesters raise requisitions, approvers review them, recruiters publish frozen adverts, candidates apply, and recruiters review scored applications. Every write goes through one Idris agent, `kernelAgent`, for the container `Sum TransitionC (Sum IntakeC AssessC)`: requisition transitions, application intake, and recorded human decisions.
 
 ## Start here: the 60-second version
 
@@ -11,7 +11,7 @@ edited <- publish r approval ctx (advertId old) [MkQuestion 1 "A different quest
 Right (edited ** existing)   -- Mismatch between: old and edited.
 ```
 
-It is one of **19 compile-fail fixtures**, each checked for its expected diagnostic. The others include approval without evidence, a forged score, a handler that returns the wrong reply, and a hire that replies "onboarding to follow" instead of an employee with provenance ([`OnboardingToFollow.idr`](tests/compile-fail/OnboardingToFollow.idr)).
+It is one of **20 compile-fail fixtures**, each checked for its expected diagnostic. The others include approval without evidence, a forged score, a handler that returns the wrong reply, and a hire that replies "onboarding to follow" instead of an employee with provenance ([`OnboardingToFollow.idr`](tests/compile-fail/OnboardingToFollow.idr)).
 
 **Containers are the architecture, not just the vocabulary.**
 
@@ -36,6 +36,8 @@ Slice 1 adds a usable requester/approver web workflow around the Idris core:
 - publish a frozen advert with screening questions and weighted skills from a recruiter queue;
 - apply as a candidate with consent, answers, experience and CV text, seeing only an acknowledgement;
 - review applications ranked by score, with the breakdown, answers against expected answers and scoring evidence;
+- record a shortlist or reasoned rejection as kernel evidence, after the kernel re-derives the stored score;
+- withdraw (candidate) or erase (recruiter) an application's personal data, with automatic anonymisation after a retention period;
 - enforce demo requester/approver permissions, separation of duties (no self-review) and optimistic generations;
 - scope requisitions by tenant and requester ownership;
 - persist authoritative transactional state and append-only audit history in SQLite;
@@ -48,7 +50,7 @@ The role switch and tenant header are explicitly demo identity mechanisms, not a
 
 ## Run
 
-Requires Idris **0.8.0-fd405085b**, Chez Scheme, Make, Python 3.9+, and Node.js 22+. Only Idris's bundled prelude/base libraries are used; Python and Node run verification and application boundaries, not the typed recruitment rules.
+Requires Idris **0.8.0-fd405085b**, Chez Scheme, Make, Python 3.9+, and Node.js 24.15+ (see `.nvmrc`), where `node:sqlite` is a release candidate rather than experimental. Node 22.5+ still runs the suite, with an experimental-feature warning. Only Idris's bundled prelude/base libraries are used; Python and Node run verification and application boundaries, not the typed recruitment rules.
 
 ```sh
 make test       # hygiene, totality/type check, compiler fixtures, runtime tests, CLI smoke, HTTP
@@ -87,9 +89,9 @@ Expected demo: reference `1`, advert `1`, keywords `5`, experience `18`, screeni
 
 ## Verified locally
 
-Core verification is **226 runtime checks**, one positive compiler fixture, and **19 invalid fixtures** with their expected diagnostics. The 13-test HTTP integration suite covers the complete rework/approval path, stale writes, Unicode and multiline transport, durable restart, Idris transitions, invalid fields, retry idempotency, cross-process duplicate delivery, tenant/owner isolation, migration from a Slice 1 database, self-review refusal, refusal of a directly tampered database row, advert publication and freezing, candidate-shaped responses, consent and duplicate applications, restart-then-apply, and recruiter score workings. Three Playwright journeys drive the built UI in a real browser: draft through rework to approval, a terminal decline, and publish → apply → review. `make test` runs both suites. Logs are regenerated under `build/verification/logs/`.
+Core verification is **234 runtime checks**, one positive compiler fixture, and **20 invalid fixtures** with their expected diagnostics. The 18-test HTTP integration suite covers the complete rework/approval path, stale writes, Unicode and multiline transport, durable restart, Idris transitions, invalid fields, retry idempotency, cross-process duplicate delivery, tenant/owner isolation, migration from a Slice 1 database, self-review refusal, refusal of a directly tampered database row, advert publication and freezing, candidate-shaped responses, consent and duplicate applications, restart-then-apply, recruiter score workings, recorded decisions, refusal to review a score the policy cannot reproduce, withdrawal and erasure, retention, idempotency expiry and rate limiting. Three Playwright journeys drive the built UI in a real browser: draft through rework to approval, a terminal decline, and publish → apply → decide → withdraw → review. `make test` runs both suites. Logs are regenerated under `build/verification/logs/`.
 
-GitHub Actions is configured to bootstrap the same compiler and run `make test` on Linux. That remote run has not happened here; the project-local bootstrap has not been executed end-to-end because the matching compiler was already installed. No Docker tooling is included: “container” here exclusively means the mathematical abstraction from the papers.
+GitHub Actions bootstraps the pinned compiler from source on Ubuntu 24.04 with Node 24, then runs `make test`, the production build and the Playwright journeys in Chromium. All three slice branches passed on 2026-09-24 (about 10 minutes each, mostly the compiler bootstrap). No Docker tooling is included: “container” here exclusively means the mathematical abstraction from the papers.
 
 ## Layout
 
@@ -105,6 +107,6 @@ GitHub Actions is configured to bootstrap the same compiler and run `make test` 
 | `tests/` | Runtime/invariant checks and compiler-positive/negative fixtures |
 | `docs/` | Architecture, source interpretation, verification and ADRs |
 
-Start with [the container walkthrough](docs/containers.md), [the Slice 2 design](docs/slice-2.md), [the invalid question edit](tests/compile-fail/SwapQuestions.idr), and [the guarantee boundary](docs/architecture.md). The design note asked for a Haskell model with a LaTeX decisions document. [ADR 001](docs/adr/001-idris2.md) records the choice of Idris 2, which the note's Q5 left open: the key index is an advert *value*, not a phantom ID, and the hire morphism's provenance equality needs full dependent types as well. The decisions log is kept as Markdown ADRs in [`docs/adr/`](docs/adr/).
+Start with [the container walkthrough](docs/containers.md), [the Slice 2 design](docs/slice-2.md), [Slice 2.1](docs/slice-2-1.md), [the invalid question edit](tests/compile-fail/SwapQuestions.idr), and [the guarantee boundary](docs/architecture.md). The design note asked for a Haskell model with a LaTeX decisions document. [ADR 001](docs/adr/001-idris2.md) records the choice of Idris 2, which the note's Q5 left open: the key index is an advert *value*, not a phantom ID, and the hire morphism's provenance equality needs full dependent types as well. The decisions log is kept as Markdown ADRs in [`docs/adr/`](docs/adr/).
 
 The system has no legacy integration, paid API, real authentication, public candidate portal, persisted people record, or automated hiring decision. A real extractor can replace the mock through its existing typed port. The hire morphism exists in the core and CLI; persisting the people record and a hire screen is the next slice.

@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type {
   AdvertQuestion,
+  AssessRequest,
+  Disposition,
   AdvertSkill,
   AuditEntry,
   IntakeRequest,
@@ -59,8 +61,8 @@ export function decodeFrames(input: string): string[] {
   return values;
 }
 
-const protocol = "recruitment-kernel-v3";
-const resultProtocol = "recruitment-kernel-result-v3";
+const protocol = "recruitment-kernel-v4";
+const resultProtocol = "recruitment-kernel-result-v4";
 
 function fieldValues(fields: RequisitionFields): string[] {
   return [
@@ -158,11 +160,8 @@ export function encodeTransition(current: WorkflowCase | null, command: Workflow
   ]);
 }
 
-export function encodeIntake(advertised: WorkflowCase, request: IntakeRequest): string {
-  return encodeFrames([
-    protocol,
-    "intake",
-    ...caseValues(advertised),
+function applicationValues(request: IntakeRequest): string[] {
+  return [
     String(request.applicationId),
     request.actor,
     String(request.tick),
@@ -173,6 +172,33 @@ export function encodeIntake(advertised: WorkflowCase, request: IntakeRequest): 
     ...request.answers.flatMap(({ questionId, answer }) => [String(questionId), answer]),
     String(request.years.length),
     ...request.years.flatMap(({ skillId, years }) => [String(skillId), String(years)])
+  ];
+}
+
+export function encodeIntake(advertised: WorkflowCase, request: IntakeRequest): string {
+  return encodeFrames([protocol, "intake", ...caseValues(advertised), ...applicationValues(request)]);
+}
+
+export function encodeAssess(advertised: WorkflowCase, request: AssessRequest): string {
+  const { breakdown, evidence } = request.stored;
+  return encodeFrames([
+    protocol,
+    "assess",
+    ...caseValues(advertised),
+    ...applicationValues(request.application),
+    String(breakdown.keywords),
+    String(breakdown.experience),
+    String(breakdown.screening),
+    String(breakdown.completeness),
+    evidence.actor,
+    String(evidence.tick),
+    String(evidence.reference),
+    String(evidence.revision),
+    evidence.detail,
+    request.reviewer,
+    String(request.tick),
+    request.disposition,
+    request.reason
   ]);
 }
 
@@ -290,6 +316,24 @@ function readReceipt(reader: FieldReader): ScoreReceipt {
   };
 }
 
+function readReview(reader: FieldReader): { disposition: Disposition; evidence: AuditEntry } {
+  const disposition = reader.read();
+  if (disposition !== "shortlist" && disposition !== "reject") {
+    throw new WorkflowError("invalid-worker-response");
+  }
+  return {
+    disposition,
+    evidence: {
+      event: "application-reviewed",
+      actor: reader.read(),
+      tick: reader.number(),
+      reference: reader.number(),
+      revision: reader.number(),
+      detail: reader.read()
+    }
+  };
+}
+
 function decodeResult<T>(output: string, kind: string, read: (reader: FieldReader) => T): T {
   const reader = new FieldReader(decodeFrames(output));
   if (reader.read() !== resultProtocol) throw new WorkflowError("invalid-worker-response");
@@ -316,6 +360,14 @@ export class WorkflowClient {
   async intake(advertised: WorkflowCase, request: IntakeRequest): Promise<ScoreReceipt> {
     const output = await this.call(encodeIntake(advertised, request));
     return decodeResult(output, "receipt", readReceipt);
+  }
+
+  async assess(
+    advertised: WorkflowCase,
+    request: AssessRequest
+  ): Promise<{ disposition: Disposition; evidence: AuditEntry }> {
+    const output = await this.call(encodeAssess(advertised, request));
+    return decodeResult(output, "review", readReview);
   }
 
   private async call(input: string): Promise<string> {

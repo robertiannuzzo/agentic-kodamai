@@ -1,6 +1,6 @@
 module Recruitment.Core.Hire
 
-import public Recruitment.Core.Score
+import public Recruitment.Core.Review
 
 %default total
 
@@ -38,11 +38,12 @@ hireEvidence (Onboarded _ _ _ ev) = ev
 ||| employee *and* a proof that the employee came from the scored application.
 ||| "Onboarding to follow" has no inhabitant of this type: there is no reply in
 ||| which the person does not exist or points at a different application.
-||| Requiring `Score a` means an unscored application cannot be hired.
+||| Requiring `Shortlisted s` means only an application a person shortlisted,
+||| after it was scored, can be hired.
 export
-hire : (a : Advert) -> (s : Score a) -> Context -> Starter ->
+hire : (a : Advert) -> (s : Score a) -> Shortlisted s -> Context -> Starter ->
        Either DomainError (e : Employee ** provenanceOf e = (a ** scoredApplication s))
-hire a s c starter = do
+hire a s _ c starter = do
   validContext c
   if nonBlank starter.legalName then Right () else Left (InvalidField "legal-name")
   let req = requisitionOf a

@@ -91,17 +91,93 @@ public export
 intakeAgent : Agent ExtractionC -> Agent IntakeC
 intakeAgent leaf = compose intakeHandler (intakeChainAgent leaf)
 
-||| The whole workflow kernel: exactly one of a requisition transition or an
-||| application intake is asked per process call, so it is a sum.
+||| What the adapter persisted when the application was scored.
+public export
+record StoredReceipt where
+  constructor MkStoredReceipt
+  breakdown : Breakdown
+  evidence : Evidence ApplicationScored
+
+||| A person's decision on one stored application. `intake` carries the stored
+||| inputs and the original scoring context, so re-scoring reproduces them.
+public export
+record Assessment where
+  constructor MkAssessment
+  intake : Intake
+  stored : StoredReceipt
+  reviewer : Context
+  disposition : Disposition
+
+||| The reply carries the re-derived score and a decision indexed by it.
+public export
+AssessC : Cont
+AssessC = MkCont (a : Advert ** Assessment)
+  (\(a ** _) => Either DomainError (s : Score a ** ReviewOutcome s))
+
+||| The decision link: stored workings must equal the re-derived ones.
+public export
+VerdictC : Cont
+VerdictC = MkCont (a : Advert ** (s : Score a ** (StoredReceipt, Context, Disposition)))
+  (\(a ** (s ** _)) => Either DomainError (ReviewOutcome s))
+
+||| re-score ◁ (stop ∨ verdict): the intake chain again, then the person.
+public export
+AssessChain : Cont
+AssessChain = Seq IntakeC (Sum StopC VerdictC)
+
+sameReceipt : StoredReceipt -> Receipt a -> Bool
+sameReceipt stored receipt =
+  stored.breakdown == breakdown receipt.score &&
+  stored.evidence.detail == receipt.evidence.detail &&
+  stored.evidence.reference == receipt.evidence.reference &&
+  stored.evidence.revision == receipt.evidence.revision
+
+||| A stored score that the current policy cannot reproduce is not reviewed:
+||| the policy changed or the stored workings were altered.
+public export
+verdictAgent : Agent VerdictC
+verdictAgent = answers (\(a ** (s ** (stored, reviewer, disposition))) =>
+  if stored.breakdown == breakdown s
+    then reviewApplication a s reviewer disposition
+    else Left InvalidHistory)
+
+afterRescore : (a : Advert) -> Assessment -> Either DomainError (Receipt a) ->
+               Prompt (Sum StopC VerdictC)
+afterRescore a request (Left err) = Left (Failed err)
+afterRescore a request (Right receipt) =
+  if sameReceipt request.stored receipt
+    then Right (a ** (receipt.score ** (request.stored, request.reviewer, request.disposition)))
+    else Left (Failed InvalidHistory)
+
+assessPrompt : Prompt AssessC -> Prompt AssessChain
+assessPrompt (a ** request) = ((a ** request.intake) ** afterRescore a request)
+
+assessReply : (p : Prompt AssessC) -> Reply AssessChain (assessPrompt p) -> Reply AssessC p
+assessReply (a ** request) (Left err ** _) = Left err
+assessReply (a ** request) (Right receipt ** decided) with (sameReceipt request.stored receipt)
+  assessReply (a ** request) (Right receipt ** decided) | True =
+    map (\outcome => (receipt.score ** outcome)) decided
+  assessReply (a ** request) (Right receipt ** _) | False = Left InvalidHistory
+
+public export
+assessHandler : Handler AssessC AssessChain
+assessHandler = MkHandler assessPrompt assessReply
+
+public export
+assessAgent : Agent ExtractionC -> Agent AssessC
+assessAgent leaf = compose assessHandler (seqAgent (intakeAgent leaf) (sumAgent stopAgent verdictAgent))
+
+||| The whole workflow kernel: exactly one of a requisition transition, an
+||| application intake or a review is asked per process call, so it is a sum.
 public export
 KernelC : Cont
-KernelC = Sum TransitionC IntakeC
+KernelC = Sum TransitionC (Sum IntakeC AssessC)
 
 ||| The composition root chooses the extraction leaf. Replacing it with a
 ||| model-backed extractor is a local change: nothing above the leaf moves.
 public export
 kernelAgent : Agent ExtractionC -> Agent KernelC
-kernelAgent leaf = sumAgent transitionAgent (intakeAgent leaf)
+kernelAgent leaf = sumAgent transitionAgent (sumAgent (intakeAgent leaf) (assessAgent leaf))
 
 ||| Leaf for the web slice: the API stores the candidate's CV text immutably and
 ||| addresses it by (locator, version). The leaf answers only for that document.

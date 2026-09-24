@@ -1,6 +1,13 @@
-import { useEffect, useState, type FormEvent } from "react";
-import type { AdvertSchema, ApplicationRecord } from "../../../packages/contracts/src/index";
-import { listApplications, type AdvertDraft, type DemoIdentity } from "./api";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import type { AdvertSchema, ApplicationRecord, Disposition } from "../../../packages/contracts/src/index";
+import {
+  eraseApplication,
+  listApplications,
+  reviewApplication,
+  type AdvertDraft,
+  type DemoIdentity
+} from "./api";
+import { describeError } from "./messages";
 
 const blankQuestion = { prompt: "", expected: "" };
 const blankSkill = { keyword: "", weight: 1, targetYears: 1 };
@@ -222,25 +229,215 @@ function ScoreBar({ record }: { record: ApplicationRecord }) {
   );
 }
 
+function ReviewControls({
+  busy,
+  onReview
+}: {
+  busy: boolean;
+  onReview(disposition: Disposition, reason: string, note: string): Promise<void>;
+}) {
+  const [reason, setReason] = useState("");
+  const [note, setNote] = useState("");
+  return (
+    <div className="review-controls">
+      <label>
+        Reason (required to reject)
+        <input value={reason} onChange={(event) => setReason(event.target.value)} />
+      </label>
+      <label>
+        Private note
+        <textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} />
+      </label>
+      <div className="button-row">
+        <button className="primary" disabled={busy} onClick={() => void onReview("shortlist", reason, note)}>
+          Shortlist
+        </button>
+        <button className="danger" disabled={busy} onClick={() => void onReview("reject", reason, note)}>
+          Reject
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function EraseControl({ busy, onErase }: { busy: boolean; onErase(reason: string): Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  if (!open) {
+    return (
+      <button className="link-button" onClick={() => setOpen(true)}>
+        Erase personal data…
+      </button>
+    );
+  }
+  return (
+    <div className="erase-control">
+      <label>
+        Reason for erasure
+        <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Erasure request by email" />
+      </label>
+      <p>Removes the name, email, CV text, answers and review notes. The score and evidence remain.</p>
+      <div className="button-row">
+        <button className="danger" disabled={busy || reason.trim() === ""} onClick={() => void onErase(reason)}>
+          Erase personal data
+        </button>
+        <button disabled={busy} onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ApplicationItem({
+  record,
+  identity,
+  onChanged
+}: {
+  record: ApplicationRecord;
+  identity: DemoIdentity;
+  onChanged(): Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const status =
+    record.erasedAt !== null
+      ? "Erased"
+      : record.review === null
+        ? "Awaiting decision"
+        : record.review.disposition === "shortlist"
+          ? "Shortlisted"
+          : "Rejected";
+
+  async function act(operation: () => Promise<unknown>): Promise<void> {
+    setBusy(true);
+    setFailed(null);
+    try {
+      await operation();
+      await onChanged();
+    } catch (error) {
+      setFailed(describeError(error instanceof Error ? error.message : "request-failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <li aria-label={`Application ${record.applicationId}`}>
+      <details>
+        <summary>
+          <span className="candidate">
+            <strong>{record.candidateName}</strong>
+            <small>
+              Application {record.applicationId} · <span data-testid="decision">{status}</span>
+            </small>
+          </span>
+          <ScoreBar record={record} />
+          <span
+            className="total"
+            data-testid="total"
+            aria-label={`Total ${record.total} of ${maximumScore(record)}`}
+          >
+            {record.total}
+            <small> / {maximumScore(record)}</small>
+          </span>
+        </summary>
+        <dl className="breakdown">
+          {components.map((part) => (
+            <div key={part}>
+              <dt>
+                <span className={`swatch ${part}`} aria-hidden="true" />
+                {part}
+              </dt>
+              <dd>{record.breakdown[part]}</dd>
+            </div>
+          ))}
+        </dl>
+        {failed === null ? null : (
+          <p className="inline-error" role="alert">
+            {failed}
+          </p>
+        )}
+        {record.review === null && record.erasedAt === null ? (
+          <ReviewControls
+            busy={busy}
+            onReview={(disposition, reason, note) =>
+              act(() => reviewApplication(identity, record, { disposition, reason, note }))
+            }
+          />
+        ) : null}
+        {record.review === null ? null : (
+          <div className="decision">
+            <strong>{record.review.disposition === "shortlist" ? "Shortlisted" : "Rejected"}</strong> by{" "}
+            {record.review.evidence.actor}
+            {record.review.reason === "" ? null : <p>Reason: {record.review.reason}</p>}
+            {record.review.note === "" ? null : <p>Note: {record.review.note}</p>}
+            <small>Evidence: {record.review.evidence.detail}</small>
+          </div>
+        )}
+        {record.erasedAt === null ? null : (
+          <p className="erased-line">
+            Personal data erased: {record.erasureReason}. The score and evidence are kept without identifying the
+            candidate.
+          </p>
+        )}
+        {record.erasedAt !== null ? null : (
+          <>
+            <h3>Answers</h3>
+            <ul className="answer-list">
+              {record.answers.map((a) => (
+                <li key={a.questionId}>
+                  <span>{a.prompt}</span>
+                  <strong>{a.answer === "" ? "—" : a.answer}</strong>
+                  <small>expected {a.expected}</small>
+                </li>
+              ))}
+            </ul>
+            <h3>Experience</h3>
+            <ul className="answer-list">
+              {record.experience.map((e) => (
+                <li key={e.skillId}>
+                  <span>{e.keyword}</span>
+                  <strong>{e.years} years</strong>
+                  <small>
+                    weight {e.weight}, capped at {e.targetYears}
+                  </small>
+                </li>
+              ))}
+            </ul>
+            <h3>CV text</h3>
+            <p className="cv-text">{record.cvText}</p>
+          </>
+        )}
+        <p className="evidence-line">
+          Evidence: {record.evidence.detail}
+          {record.erasedAt === null ? ` · scored for ${record.candidateActor}` : ""}
+        </p>
+        {record.erasedAt === null ? (
+          <EraseControl busy={busy} onErase={(reason) => act(() => eraseApplication(identity, record, reason))} />
+        ) : null}
+      </details>
+    </li>
+  );
+}
+
 export function ApplicationsPanel({ identity, reference }: { identity: DemoIdentity; reference: number }) {
   const [records, setRecords] = useState<ApplicationRecord[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    setRecords(null);
-    setFailed(null);
-    listApplications(identity, reference)
-      .then((result) => {
-        if (active) setRecords(result);
-      })
-      .catch((error: unknown) => {
-        if (active) setFailed(error instanceof Error ? error.message : "Unable to load applications");
-      });
-    return () => {
-      active = false;
-    };
+  const load = useCallback(async () => {
+    try {
+      setRecords(await listApplications(identity, reference));
+      setFailed(null);
+    } catch (error) {
+      setFailed(describeError(error instanceof Error ? error.message : "request-failed"));
+    }
   }, [identity, reference]);
+
+  useEffect(() => {
+    setRecords(null);
+    void load();
+  }, [load]);
 
   return (
     <section className="content-card" aria-labelledby="applications-title">
@@ -253,66 +450,15 @@ export function ApplicationsPanel({ identity, reference }: { identity: DemoIdent
       </div>
       <p className="lede">
         Scores are deterministic workings under a versioned policy to support review. They are not a hiring
-        decision.
+        decision: each application needs a recorded decision by a person, and only a shortlisted application can be
+        hired.
       </p>
       {failed !== null ? <p role="alert">{failed}</p> : null}
       {records === null && failed === null ? <p className="empty compact">Loading…</p> : null}
       {records?.length === 0 ? <p className="empty compact">No applications yet.</p> : null}
-      <ol className="application-list">
+      <ol className="application-list" aria-label="Applications">
         {records?.map((record) => (
-          <li key={record.applicationId}>
-            <details>
-              <summary>
-                <span className="candidate">
-                  <strong>{record.candidateName}</strong>
-                  <small>Application {record.applicationId}</small>
-                </span>
-                <ScoreBar record={record} />
-                <span className="total" aria-label={`Total ${record.total} of ${maximumScore(record)}`}>
-                  {record.total}
-                  <small> / {maximumScore(record)}</small>
-                </span>
-              </summary>
-              <dl className="breakdown">
-                {components.map((part) => (
-                  <div key={part}>
-                    <dt>
-                      <span className={`swatch ${part}`} aria-hidden="true" />
-                      {part}
-                    </dt>
-                    <dd>{record.breakdown[part]}</dd>
-                  </div>
-                ))}
-              </dl>
-              <h3>Answers</h3>
-              <ul className="answer-list">
-                {record.answers.map((a) => (
-                  <li key={a.questionId}>
-                    <span>{a.prompt}</span>
-                    <strong>{a.answer === "" ? "—" : a.answer}</strong>
-                    <small>expected {a.expected}</small>
-                  </li>
-                ))}
-              </ul>
-              <h3>Experience</h3>
-              <ul className="answer-list">
-                {record.experience.map((e) => (
-                  <li key={e.skillId}>
-                    <span>{e.keyword}</span>
-                    <strong>{e.years} years</strong>
-                    <small>
-                      weight {e.weight}, capped at {e.targetYears}
-                    </small>
-                  </li>
-                ))}
-              </ul>
-              <h3>CV text</h3>
-              <p className="cv-text">{record.cvText}</p>
-              <p className="evidence-line">
-                Evidence: {record.evidence.detail} · scored for {record.candidateActor}
-              </p>
-            </details>
-          </li>
+          <ApplicationItem key={record.applicationId} record={record} identity={identity} onChanged={load} />
         ))}
       </ol>
     </section>

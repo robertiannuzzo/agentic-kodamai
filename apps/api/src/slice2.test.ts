@@ -1,98 +1,21 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import type {
   ApplicationAcknowledgement,
   ApplicationRecord,
-  OpenAdvert,
-  RequisitionCase
+  OpenAdvert
 } from "../../../packages/contracts/src/index.js";
-import { request, start, type RunningApplication } from "./test-support.js";
-
-const schema = {
-  questions: [
-    { prompt: "Can you work in this time zone?", expected: "yes" },
-    { prompt: "Do you use typed programming?", expected: "yes" }
-  ],
-  skills: [
-    { keyword: "idris", weight: 3, targetYears: 5 },
-    { keyword: "sql", weight: 2, targetYears: 3 }
-  ]
-};
-
-function application(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    candidateName: "Ada Candidate",
-    cvText: "Idris and SQL experience",
-    consent: true,
-    answers: [
-      { questionId: 1, answer: "yes" },
-      { questionId: 2, answer: "yes" }
-    ],
-    years: [
-      { skillId: 1, years: 4 },
-      { skillId: 2, years: 8 }
-    ],
-    ...overrides
-  };
-}
-
-async function withApplication(
-  name: string,
-  body: (running: RunningApplication, databasePath: string) => Promise<void>
-): Promise<void> {
-  const directory = mkdtempSync(join(tmpdir(), `agentic-kodamai-${name}-`));
-  const databasePath = join(directory, "slice2.sqlite");
-  const running = await start(databasePath);
-  try {
-    await body(running, databasePath);
-  } finally {
-    await running.application.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
-}
-
-async function approvedRequisition(running: RunningApplication): Promise<RequisitionCase> {
-  const created = await request(running, "/api/requisitions", {
-    method: "POST",
-    body: {
-      fields: {
-        role: "Typed Systems Engineer",
-        department: "Engineering",
-        headcount: 1,
-        budgetMinor: 12000000,
-        justification: "Build recruitment tools"
-      }
-    }
-  });
-  const draft = created.json as RequisitionCase;
-  const submitted = await request(running, `/api/requisitions/${draft.reference}/submit`, {
-    method: "POST",
-    body: { generation: draft.generation }
-  });
-  const pending = submitted.json as RequisitionCase;
-  const approved = await request(running, `/api/requisitions/${draft.reference}/review`, {
-    method: "POST",
-    role: "approver",
-    body: { generation: pending.generation, decision: "approve", reason: "" }
-  });
-  assert.equal(approved.status, 200);
-  return approved.json as RequisitionCase;
-}
-
-async function publish(running: RunningApplication, row: RequisitionCase): Promise<RequisitionCase> {
-  const published = await request(running, `/api/requisitions/${row.reference}/advert`, {
-    method: "POST",
-    role: "recruiter",
-    body: { generation: row.generation, ...schema }
-  });
-  assert.equal(published.status, 200);
-  return published.json as RequisitionCase;
-}
+import {
+  application,
+  approvedRequisition,
+  publish,
+  schema,
+  request,
+  start,
+  withApplication
+} from "./test-support.js";
 
 test("a recruiter publishes a frozen advert and applications are scored by the kernel", async () => {
   await withApplication("advert", async (running, databasePath) => {
@@ -139,17 +62,18 @@ test("a recruiter publishes a frozen advert and applications are scored by the k
         { skillId: 1, keyword: "idris" },
         { skillId: 2, keyword: "sql" }
       ],
-      applied: false
+      applied: false,
+      retentionDays: 180
     });
     assert.equal((await request(running, "/api/requisitions", candidate)).status, 403);
 
     const path = `/api/adverts/${approved.reference}/applications`;
-    const noConsent = await request(running, path, {
+    const noNotice = await request(running, path, {
       ...candidate,
       method: "POST",
-      body: application({ consent: false })
+      body: application({ acknowledgedPrivacyNotice: false })
     });
-    assert.deepEqual(noConsent.json, { error: "consent-required" });
+    assert.deepEqual(noNotice.json, { error: "privacy-notice-required" });
 
     const key = randomUUID();
     const applied = await request(running, path, {

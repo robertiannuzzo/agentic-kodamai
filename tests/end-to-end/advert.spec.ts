@@ -22,7 +22,7 @@ async function applyAs(
   await page.getByLabel("idris", { exact: true }).fill(details.years[0]);
   await page.getByLabel("sql", { exact: true }).fill(details.years[1]);
   await page.getByLabel("CV").fill(details.cv);
-  await page.getByLabel(/I consent/).check();
+  await page.getByLabel("I have read how my application will be used.").check();
   await page.getByRole("button", { name: "Submit application" }).click();
   await expect(page.getByRole("status")).toContainText("Application received");
 }
@@ -40,13 +40,13 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await page.getByLabel("Business justification").fill("Grow the typed kernel team.");
   await page.getByRole("button", { name: "Save draft" }).click();
   await page.getByRole("button", { name: "Submit requisition" }).click();
-  await expect(page.locator(".status-badge")).toHaveText("Awaiting review");
+  await expect(page.getByTestId("stage")).toHaveText("Awaiting review");
   await viewAs(page, "Approver");
   await page.getByRole("navigation", { name: "Awaiting your review" })
     .getByRole("button", { name: /Compiler Engineer/ })
     .click();
   await page.getByRole("button", { name: "Approve", exact: true }).click();
-  await expect(page.locator(".status-badge")).toHaveText("Approved");
+  await expect(page.getByTestId("stage")).toHaveText("Approved");
 
   // Recruiter picks it from the queue and publishes the advert.
   await viewAs(page, "Recruiter");
@@ -66,7 +66,7 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await page.getByLabel("Weight", { exact: true }).nth(1).fill("2");
   await page.getByLabel("Target years", { exact: true }).nth(1).fill("3");
   await page.getByRole("button", { name: "Publish advert" }).click();
-  await expect(page.locator(".status-badge")).toHaveText("Advertising");
+  await expect(page.getByTestId("stage")).toHaveText("Advertising");
   await expect(page.getByText("Frozen", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Publish advert" })).toHaveCount(0);
 
@@ -95,22 +95,50 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   // Recruiter reviews ranked applications and their workings.
   await viewAs(page, "Recruiter");
   await page.getByRole("button", { name: /Compiler Engineer/ }).click();
-  const applications = page.locator(".application-list > li");
+  const applications = page.getByRole("list", { name: "Applications" }).getByRole("listitem", { name: /^Application \d+$/ });
   await expect(applications).toHaveCount(2);
   await expect(applications.nth(0)).toContainText("Ada Lovelace");
-  await expect(applications.nth(0).locator(".total")).toHaveText("46 / 49");
+  await expect(applications.nth(0).getByTestId("total")).toHaveText("46 / 49");
   await expect(applications.nth(1)).toContainText("Grace Hopper");
-  await expect(applications.nth(1).locator(".total")).toHaveText("20 / 49");
-  await applications.nth(0).locator("summary").click();
-  await expect(applications.nth(0).locator(".breakdown")).toContainText("keywords5");
-  await expect(applications.nth(0).locator(".breakdown")).toContainText("experience18");
+  await expect(applications.nth(1).getByTestId("total")).toHaveText("20 / 49");
+  await applications.nth(0).getByText("Ada Lovelace").click();
+  await expect(applications.nth(0)).toContainText("keywords5");
+  await expect(applications.nth(0)).toContainText("experience18");
   await expect(applications.nth(0)).toContainText("policy:recruitment-score-v1");
-  await expect(page.getByText("They are not a hiring decision.")).toBeVisible();
+  await expect(page.getByText("They are not a hiring decision", { exact: false })).toBeVisible();
+
+  // A person decides: shortlist Ada; rejecting Grace needs a reason.
+  await applications.nth(0).getByLabel("Private note").fill("Strong compiler background.");
+  await applications.nth(0).getByRole("button", { name: "Shortlist" }).click();
+  await expect(applications.nth(0).getByTestId("decision")).toHaveText("Shortlisted");
+  await expect(applications.nth(0)).toContainText("application:1;total:46;disposition:shortlist");
+  await applications.nth(1).getByText("Grace Hopper").click();
+  await applications.nth(1).getByRole("button", { name: "Reject" }).click();
+  await expect(applications.nth(1).getByRole("alert")).toContainText("Give a reason");
+  await applications.nth(1).getByLabel("Reason (required to reject)").fill("Needs more typed programming.");
+  await applications.nth(1).getByRole("button", { name: "Reject" }).click();
+  await expect(applications.nth(1).getByTestId("decision")).toHaveText("Rejected");
+
+  // Grace withdraws; her personal data is erased but the decision record remains.
+  await viewAs(page, "Candidate");
+  const candidate = page.getByLabel("Candidate email");
+  await candidate.fill("grace@example.test");
+  await candidate.press("Enter");
+  await page.getByRole("button", { name: "Withdraw and erase my application" }).click();
+  await page.getByRole("button", { name: "Confirm withdrawal" }).click();
+  await expect(page.getByRole("button", { name: "Submit application" })).toBeVisible();
+  await expect(page.getByText("We keep your application for 180 days")).toBeVisible();
+
+  await viewAs(page, "Recruiter");
+  await page.getByRole("button", { name: /Compiler Engineer/ }).click();
+  await expect(applications.nth(1)).toContainText("Erased candidate");
+  await expect(applications.nth(1).getByTestId("decision")).toHaveText("Erased");
+  await expect(applications.nth(1).getByTestId("total")).toHaveText("20 / 49");
 
   // Reload: advert, applications and history come back.
   await page.reload();
   await viewAs(page, "Recruiter");
   await page.getByRole("button", { name: /Compiler Engineer/ }).click();
-  await expect(page.locator(".application-list > li")).toHaveCount(2);
-  await expect(page.locator(".timeline li strong").first()).toHaveText("advert created");
+  await expect(page.getByRole("list", { name: "Applications" }).getByRole("listitem", { name: /^Application \d+$/ })).toHaveCount(2);
+  await expect(page.getByRole("list", { name: "Audit timeline" }).getByTestId("event").first()).toHaveText("advert created");
 });

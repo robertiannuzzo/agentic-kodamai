@@ -69,14 +69,18 @@ IntakeChain = Seq ValidateC (Sum StopC (Seq ExtractionC (Sum StopC ApplicationTa
 
 `intakeChainAgent` reuses `applicationAgent` and `scoreAgent`, and takes the extraction leaf as a parameter, so the model sits exactly where the papers put it. See [the Slice 2 design](slice-2.md) and ADR 010.
 
+## Human decisions
+
+Slice 2.1 adds `AssessC` as the kernel's third branch: `KernelC = Sum TransitionC (Sum IntakeC AssessC)`. Its handler delegates to `Seq IntakeC (Sum StopC VerdictC)`, re-running the stored inputs through the intake chain before a person's decision is recorded against the re-derived `Score a`. See [Slice 2.1](slice-2-1.md).
+
 ## Hire: the missing morphism
 
 `HireC` is the stage-2 link from the design note, section 4:
 
 ```idris
-HireC = MkCont (a : Advert ** (Score a, Context, Starter))
-  (\(a ** (s, _, _)) => Either DomainError
-                          (e : Employee ** provenanceOf e = (a ** scoredApplication s)))
+HireC = MkCont (a : Advert ** (s : Score a ** (Shortlisted s, Context, Starter)))
+  (\(a ** (s ** _)) => Either DomainError
+                         (e : Employee ** provenanceOf e = (a ** scoredApplication s)))
 ```
 
 The reply owes an employee and a proof of the application it came from. `Employee`'s constructor is private, so `hire` is the only way to produce one. `OnboardingToFollow` shows that the legacy reply (status changes only) is a type error; `WrongProvenance` shows that hiring from one application while claiming another's provenance is too. The CLI demo runs `hireAgent` after the spine and prints the provenance.

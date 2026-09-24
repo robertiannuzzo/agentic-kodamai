@@ -4,12 +4,14 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   AdvertSchema,
   ApplicationAcknowledgement,
+  ApplicationReview,
   ApplicationRecord,
   ApplicationSubmission,
   AuditEntry,
   OpenAdvert,
   RequisitionCase,
   RequisitionStage,
+  ScoreBreakdown,
   ScoreReceipt,
   WorkflowCase,
   WorkflowCommand
@@ -37,6 +39,31 @@ export interface ApplicationCommit {
   cv: { locator: string; version: string };
   receipt: ScoreReceipt;
 }
+
+export interface ReviewCommit {
+  reference: number;
+  applicationId: number;
+  disposition: ApplicationReview["disposition"];
+  reason: string;
+  note: string;
+  evidence: AuditEntry;
+}
+
+/** Everything the kernel needs to re-derive a stored score. */
+export interface StoredApplication {
+  reference: number;
+  applicationId: number;
+  candidateActor: string;
+  cv: { locator: string; version: string; text: string };
+  answers: Array<{ questionId: number; answer: string }>;
+  years: Array<{ skillId: number; years: number }>;
+  breakdown: ScoreBreakdown;
+  evidence: AuditEntry;
+  erasedAt: number | null;
+  reviewed: boolean;
+}
+
+export const ERASED_NAME = "Erased candidate";
 
 type Row = Record<string, unknown>;
 
@@ -130,6 +157,26 @@ function parseStoredCase(payload: string): RequisitionCase {
     justification: requiredString(row.justification),
     history: (row.history as Row[]).map((entry) => auditEntry(entry, natural(entry.reference))),
     advert: advert ?? null
+  };
+}
+
+function parseStoredReview(payload: string): ApplicationReview {
+  const row = parseJson(payload);
+  const evidence = row.evidence as Row | undefined;
+  if (
+    (row.disposition !== "shortlist" && row.disposition !== "reject") ||
+    evidence === undefined ||
+    typeof evidence !== "object"
+  ) {
+    throw new StoreError("invalid-stored-idempotency-response");
+  }
+  return {
+    reference: natural(row.reference),
+    applicationId: natural(row.applicationId),
+    disposition: row.disposition,
+    reason: text(row.reason),
+    note: text(row.note),
+    evidence: auditEntry(evidence, natural(evidence.reference))
   };
 }
 
@@ -463,7 +510,7 @@ export class RecruitmentStore {
         this.database
           .prepare(`INSERT INTO applications
             (reference, application_id, tenant_id, candidate_actor, candidate_name, cv_locator,
-             cv_version, cv_text, consented_at, keywords, experience, screening, completeness, total,
+             cv_version, cv_text, notice_acknowledged_at, keywords, experience, screening, completeness, total,
              policy_version, evidence_actor, evidence_tick, evidence_revision, evidence_detail, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(
@@ -512,8 +559,176 @@ export class RecruitmentStore {
     });
   }
 
+  applicationReviewIdempotencyResult(context: CommitContext): ApplicationReview | null {
+    const payload = this.idempotencyPayload(context);
+    return payload === null ? null : parseStoredReview(payload);
+  }
+
+  storedApplication(tenantId: string, reference: number, applicationId: number): StoredApplication | null {
+    const row = this.database
+      .prepare("SELECT * FROM applications WHERE tenant_id = ? AND reference = ? AND application_id = ?")
+      .get(tenantId, reference, applicationId) as Row | undefined;
+    if (row === undefined) return null;
+    const reviewed = this.database
+      .prepare("SELECT 1 AS present FROM application_reviews WHERE reference = ? AND application_id = ?")
+      .get(reference, applicationId) as Row | undefined;
+    return {
+      reference,
+      applicationId,
+      candidateActor: requiredString(row.candidate_actor),
+      cv: {
+        locator: requiredString(row.cv_locator),
+        version: requiredString(row.cv_version),
+        text: text(row.cv_text)
+      },
+      answers: (
+        this.database
+          .prepare(`SELECT question_id, answer FROM application_answers
+            WHERE reference = ? AND application_id = ? ORDER BY ordinal`)
+          .all(reference, applicationId) as Row[]
+      ).map((entry) => ({ questionId: natural(entry.question_id), answer: text(entry.answer) })),
+      years: (
+        this.database
+          .prepare(`SELECT skill_id, years FROM application_experience
+            WHERE reference = ? AND application_id = ? ORDER BY ordinal`)
+          .all(reference, applicationId) as Row[]
+      ).map((entry) => ({ skillId: natural(entry.skill_id), years: natural(entry.years) })),
+      breakdown: {
+        keywords: natural(row.keywords),
+        experience: natural(row.experience),
+        screening: natural(row.screening),
+        completeness: natural(row.completeness)
+      },
+      evidence: {
+        event: "application-scored",
+        actor: requiredString(row.evidence_actor),
+        tick: natural(row.evidence_tick),
+        reference,
+        revision: natural(row.evidence_revision),
+        detail: requiredString(row.evidence_detail)
+      },
+      erasedAt: row.erased_at === null ? null : natural(row.erased_at),
+      reviewed: reviewed !== undefined
+    };
+  }
+
+  /** Record a kernel-produced review. One decision per application. */
+  commitReview(input: ReviewCommit, context: CommitContext): ApplicationReview {
+    return this.transaction(() => {
+      const prior = this.idempotencyPayload(context);
+      if (prior !== null) return parseStoredReview(prior);
+      const stored = this.storedApplication(context.tenantId, input.reference, input.applicationId);
+      if (stored === null) throw new StoreError("not-found");
+      if (stored.erasedAt !== null) throw new StoreError("application-erased");
+      try {
+        this.database
+          .prepare(`INSERT INTO application_reviews
+            (reference, application_id, disposition, reason, note, reviewer, tick, revision, detail, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            input.reference,
+            input.applicationId,
+            input.disposition,
+            input.reason,
+            input.note,
+            input.evidence.actor,
+            input.evidence.tick,
+            input.evidence.revision,
+            input.evidence.detail,
+            Date.now()
+          );
+      } catch (error) {
+        if (isUniqueViolation(error)) throw new StoreError("already-reviewed");
+        throw error;
+      }
+      const response: ApplicationReview = { ...input };
+      this.recordIdempotency(context, response);
+      return response;
+    });
+  }
+
+  /**
+   * Remove personal data from one application: name, contact identity, CV text,
+   * free-text answers and review notes. Scores and evidence remain, so the
+   * record of what was decided survives without identifying the person.
+   */
+  private eraseRow(reference: number, applicationId: number, reason: string, now: number): void {
+    const erased = this.database
+      .prepare(`UPDATE applications
+        SET candidate_name = ?, candidate_actor = 'erased:' || reference || ':' || application_id,
+            cv_text = '', cv_version = 'erased', erased_at = ?, erasure_reason = ?
+        WHERE reference = ? AND application_id = ? AND erased_at IS NULL`)
+      .run(ERASED_NAME, now, reason, reference, applicationId);
+    if (Number(erased.changes) === 0) return;
+    this.database
+      .prepare("UPDATE application_answers SET answer = '' WHERE reference = ? AND application_id = ?")
+      .run(reference, applicationId);
+    this.database
+      .prepare(`UPDATE application_reviews SET reason = '', note = ''
+        WHERE reference = ? AND application_id = ?`)
+      .run(reference, applicationId);
+  }
+
+  eraseApplication(tenantId: string, reference: number, applicationId: number, reason: string, now: number): boolean {
+    return this.transaction(() => {
+      const row = this.database
+        .prepare(`SELECT candidate_actor, erased_at FROM applications
+          WHERE tenant_id = ? AND reference = ? AND application_id = ?`)
+        .get(tenantId, reference, applicationId) as Row | undefined;
+      if (row === undefined) return false;
+      this.forgetIdempotency(tenantId, requiredString(row.candidate_actor), reference);
+      this.eraseRow(reference, applicationId, reason, now);
+      return true;
+    });
+  }
+
+  /** A candidate withdraws: erase their own application to this advert. */
+  eraseCandidateApplication(tenantId: string, reference: number, candidateActor: string, now: number): boolean {
+    return this.transaction(() => {
+      const row = this.database
+        .prepare(`SELECT application_id FROM applications
+          WHERE tenant_id = ? AND reference = ? AND candidate_actor = ? AND erased_at IS NULL`)
+        .get(tenantId, reference, candidateActor) as Row | undefined;
+      if (row === undefined) return false;
+      this.forgetIdempotency(tenantId, candidateActor, reference);
+      this.eraseRow(reference, natural(row.application_id), "withdrawn by candidate", now);
+      return true;
+    });
+  }
+
+  /** Idempotency keys are scoped by actor, which for a candidate is personal data. */
+  private forgetIdempotency(tenantId: string, candidateActor: string, reference: number): void {
+    this.database
+      .prepare("DELETE FROM idempotency_records WHERE tenant_id = ? AND actor = ? AND operation = ?")
+      .run(tenantId, candidateActor, `apply:${reference}`);
+  }
+
+  /** Anonymise applications older than the retention period. */
+  purgeExpiredApplications(now: number, retentionMs: number): number {
+    return this.transaction(() => {
+      const expired = this.database
+        .prepare(`SELECT tenant_id, reference, application_id, candidate_actor FROM applications
+          WHERE erased_at IS NULL AND created_at < ?`)
+        .all(now - retentionMs) as Row[];
+      for (const row of expired) {
+        const reference = natural(row.reference);
+        this.forgetIdempotency(requiredString(row.tenant_id), requiredString(row.candidate_actor), reference);
+        this.eraseRow(reference, natural(row.application_id), "retention period ended", now);
+      }
+      return expired.length;
+    });
+  }
+
+  /** Retries are only honoured within the window; older keys are forgotten. */
+  pruneIdempotency(now: number, ttlMs: number): number {
+    const result = this.database
+      .prepare("DELETE FROM idempotency_records WHERE created_at < ?")
+      .run(now - ttlMs);
+    return Number(result.changes);
+  }
+
   /** Candidate view: advertised roles without expected answers, weights or budget. */
-  openAdverts(tenantId: string, candidateActor: string): OpenAdvert[] {
+  openAdverts(tenantId: string, candidateActor: string, retentionDays = 180): OpenAdvert[] {
     const rows = this.database
       .prepare(`SELECT * FROM requisitions WHERE tenant_id = ? AND stage = 'advertising'
         ORDER BY reference DESC`)
@@ -525,7 +740,8 @@ export class RecruitmentStore {
     const applied = new Set(
       (
         this.database
-          .prepare("SELECT reference FROM applications WHERE tenant_id = ? AND candidate_actor = ?")
+          .prepare(`SELECT reference FROM applications
+            WHERE tenant_id = ? AND candidate_actor = ? AND erased_at IS NULL`)
           .all(tenantId, candidateActor) as Row[]
       ).map((row) => natural(row.reference))
     );
@@ -538,9 +754,31 @@ export class RecruitmentStore {
         department: requiredString(row.department),
         questions: schema.questions.map(({ questionId, prompt }) => ({ questionId, prompt })),
         skills: schema.skills.map(({ skillId, keyword }) => ({ skillId, keyword })),
-        applied: applied.has(reference)
+        applied: applied.has(reference),
+        retentionDays
       };
     });
+  }
+
+  private review(row: Row | undefined, reference: number, applicationId: number): ApplicationReview | null {
+    if (row === undefined) return null;
+    const disposition = row.disposition;
+    if (disposition !== "shortlist" && disposition !== "reject") throw new StoreError("invalid-stored-state");
+    return {
+      reference,
+      applicationId,
+      disposition,
+      reason: text(row.reason),
+      note: text(row.note),
+      evidence: {
+        event: "application-reviewed",
+        actor: requiredString(row.reviewer),
+        tick: natural(row.tick),
+        reference,
+        revision: natural(row.revision),
+        detail: requiredString(row.detail)
+      }
+    };
   }
 
   /** Recruiter view: every application with its answers, experience and score workings. */
@@ -556,6 +794,8 @@ export class RecruitmentStore {
       WHERE reference = ? AND application_id = ? ORDER BY ordinal`);
     const years = this.database.prepare(`SELECT * FROM application_experience
       WHERE reference = ? AND application_id = ? ORDER BY ordinal`);
+    const reviews = this.database.prepare(`SELECT * FROM application_reviews
+      WHERE reference = ? AND application_id = ?`);
     return rows.map((row) => {
       const applicationId = natural(row.application_id);
       return {
@@ -591,7 +831,10 @@ export class RecruitmentStore {
           revision: natural(row.evidence_revision),
           detail: requiredString(row.evidence_detail)
         },
-        createdAt: natural(row.created_at)
+        createdAt: natural(row.created_at),
+        review: this.review(reviews.get(reference, applicationId) as Row | undefined, reference, applicationId),
+        erasedAt: row.erased_at === null ? null : natural(row.erased_at),
+        erasureReason: row.erasure_reason === null ? null : text(row.erasure_reason)
       };
     });
   }
