@@ -167,17 +167,78 @@ public export
 assessAgent : Agent ExtractionC -> Agent AssessC
 assessAgent leaf = compose assessHandler (seqAgent (intakeAgent leaf) (sumAgent stopAgent verdictAgent))
 
+||| A hire of one stored, reviewed application. `assessment` carries the stored
+||| decision (reviewer, disposition) so re-making it reproduces what was stored.
+public export
+record Hiring where
+  constructor MkHiring
+  assessment : Assessment
+  review : Evidence ApplicationReviewed
+  hirer : Context
+  starter : Starter
+
+||| The reply is the re-derived score and an employee with proof of provenance.
+public export
+HireKC : Cont
+HireKC = MkCont (a : Advert ** Hiring)
+  (\(a ** _) => Either DomainError
+     (s : Score a ** (e : Employee ** provenanceOf e = (a ** scoredApplication s))))
+
+||| assess ◁ (stop ∨ hire): rebuild the decision, then the spine's hire link.
+public export
+HireChain : Cont
+HireChain = Seq AssessC (Sum StopC HireC)
+
+sameReview : Evidence ApplicationReviewed -> Evidence ApplicationReviewed -> Bool
+sameReview x y = x.reference == y.reference && x.revision == y.revision &&
+                 x.detail == y.detail && x.context.actor == y.context.actor &&
+                 x.context.tick == y.context.tick
+
+afterDecision : (a : Advert) -> Hiring -> Either DomainError (s : Score a ** ReviewOutcome s) ->
+                Prompt (Sum StopC HireC)
+afterDecision a h (Left err) = Left (Failed err)
+afterDecision a h (Right (s ** NotAdvanced _)) = Left (Failed NotShortlisted)
+afterDecision a h (Right (s ** Advanced shortlisted)) =
+  if sameReview (shortlistEvidence shortlisted) h.review
+    then Right (a ** (s ** (shortlisted, h.hirer, h.starter)))
+    else Left (Failed InvalidHistory)
+
+||| The stored shortlist is re-made by the recorded reviewer, at the recorded
+||| time, against the re-derived score. Only if it reproduces the stored
+||| evidence does `Shortlisted s` exist for the hire link to consume.
+hirePrompt : Prompt HireKC -> Prompt HireChain
+hirePrompt (a ** h) =
+  ((a ** { reviewer := h.review.context } h.assessment) ** afterDecision a h)
+
+hireReply : (p : Prompt HireKC) -> Reply HireChain (hirePrompt p) -> Reply HireKC p
+hireReply (a ** h) (Left err ** _) = Left err
+hireReply (a ** h) (Right (s ** NotAdvanced _) ** _) = Left NotShortlisted
+hireReply (a ** h) (Right (s ** Advanced shortlisted) ** hired)
+  with (sameReview (shortlistEvidence shortlisted) h.review)
+  hireReply (a ** h) (Right (s ** Advanced shortlisted) ** hired) | True =
+    map (\employee => (s ** employee)) hired
+  hireReply (a ** h) (Right (s ** Advanced shortlisted) ** _) | False = Left InvalidHistory
+
+public export
+hireHandler : Handler HireKC HireChain
+hireHandler = MkHandler hirePrompt hireReply
+
+public export
+hireKernelAgent : Agent ExtractionC -> Agent HireKC
+hireKernelAgent leaf = compose hireHandler (seqAgent (assessAgent leaf) (sumAgent stopAgent hireAgent))
+
 ||| The whole workflow kernel: exactly one of a requisition transition, an
-||| application intake or a review is asked per process call, so it is a sum.
+||| application intake, a review or a hire is asked per process call.
 public export
 KernelC : Cont
-KernelC = Sum TransitionC (Sum IntakeC AssessC)
+KernelC = Sum TransitionC (Sum IntakeC (Sum AssessC HireKC))
 
 ||| The composition root chooses the extraction leaf. Replacing it with a
 ||| model-backed extractor is a local change: nothing above the leaf moves.
 public export
 kernelAgent : Agent ExtractionC -> Agent KernelC
-kernelAgent leaf = sumAgent transitionAgent (sumAgent (intakeAgent leaf) (assessAgent leaf))
+kernelAgent leaf =
+  sumAgent transitionAgent (sumAgent (intakeAgent leaf) (sumAgent (assessAgent leaf) (hireKernelAgent leaf)))
 
 ||| Leaf for the web slice: the API stores the candidate's CV text immutably and
 ||| addresses it by (locator, version). The leaf answers only for that document.

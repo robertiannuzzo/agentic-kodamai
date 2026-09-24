@@ -7,6 +7,7 @@ import type {
   AdvertQuestion,
   AssessRequest,
   Disposition,
+  HireRequest,
   AdvertSkill,
   AuditEntry,
   IntakeRequest,
@@ -61,8 +62,8 @@ export function decodeFrames(input: string): string[] {
   return values;
 }
 
-const protocol = "recruitment-kernel-v4";
-const resultProtocol = "recruitment-kernel-result-v4";
+const protocol = "recruitment-kernel-v5";
+const resultProtocol = "recruitment-kernel-result-v5";
 
 function fieldValues(fields: RequisitionFields): string[] {
   return [
@@ -179,12 +180,9 @@ export function encodeIntake(advertised: WorkflowCase, request: IntakeRequest): 
   return encodeFrames([protocol, "intake", ...caseValues(advertised), ...applicationValues(request)]);
 }
 
-export function encodeAssess(advertised: WorkflowCase, request: AssessRequest): string {
+function storedValues(request: AssessRequest): string[] {
   const { breakdown, evidence } = request.stored;
-  return encodeFrames([
-    protocol,
-    "assess",
-    ...caseValues(advertised),
+  return [
     ...applicationValues(request.application),
     String(breakdown.keywords),
     String(breakdown.experience),
@@ -194,12 +192,68 @@ export function encodeAssess(advertised: WorkflowCase, request: AssessRequest): 
     String(evidence.tick),
     String(evidence.reference),
     String(evidence.revision),
-    evidence.detail,
+    evidence.detail
+  ];
+}
+
+export function encodeAssess(advertised: WorkflowCase, request: AssessRequest): string {
+  return encodeFrames([
+    protocol,
+    "assess",
+    ...caseValues(advertised),
+    ...storedValues(request),
     request.reviewer,
     String(request.tick),
     request.disposition,
     request.reason
   ]);
+}
+
+export function encodeHire(advertised: WorkflowCase, request: HireRequest): string {
+  return encodeFrames([
+    protocol,
+    "hire",
+    ...caseValues(advertised),
+    ...storedValues(request.assessment),
+    request.review.actor,
+    String(request.review.tick),
+    request.assessment.disposition,
+    String(request.review.revision),
+    request.review.detail,
+    request.hirer,
+    String(request.tick),
+    request.legalName,
+    String(request.startTick)
+  ]);
+}
+
+export interface HireResult {
+  legalName: string;
+  startTick: number;
+  reference: number;
+  applicationId: number;
+  evidence: AuditEntry;
+}
+
+function readHire(reader: FieldReader): HireResult {
+  const legalName = reader.read();
+  const startTick = reader.number();
+  const reference = reader.number();
+  const applicationId = reader.number();
+  return {
+    legalName,
+    startTick,
+    reference,
+    applicationId,
+    evidence: {
+      event: "hired",
+      actor: reader.read(),
+      tick: reader.number(),
+      reference: reader.number(),
+      revision: reader.number(),
+      detail: reader.read()
+    }
+  };
 }
 
 function safeNumber(value: string): number {
@@ -368,6 +422,11 @@ export class WorkflowClient {
   ): Promise<{ disposition: Disposition; evidence: AuditEntry }> {
     const output = await this.call(encodeAssess(advertised, request));
     return decodeResult(output, "review", readReview);
+  }
+
+  async hire(advertised: WorkflowCase, request: HireRequest): Promise<HireResult> {
+    const output = await this.call(encodeHire(advertised, request));
+    return decodeResult(output, "hired", readHire);
   }
 
   private async call(input: string): Promise<string> {

@@ -263,6 +263,41 @@ const migrations: readonly Migration[] = [
       CREATE TRIGGER application_reviews_immutable_delete BEFORE DELETE ON application_reviews
         BEGIN SELECT RAISE(ABORT, 'review-immutable'); END;
     `
+  },
+  {
+    version: 6,
+    name: "people-records-with-provenance",
+    sql: `
+      -- The join the design note found missing: a people record that exists
+      -- only as the result of hiring one shortlisted application.
+      CREATE TABLE employees (
+        employee_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        reference INTEGER NOT NULL,
+        application_id INTEGER NOT NULL,
+        legal_name TEXT NOT NULL,
+        start_tick INTEGER NOT NULL,
+        hired_by TEXT NOT NULL,
+        hired_tick INTEGER NOT NULL,
+        evidence_revision INTEGER NOT NULL,
+        evidence_detail TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE (reference, application_id),
+        FOREIGN KEY (reference, application_id) REFERENCES applications(reference, application_id)
+      );
+      CREATE INDEX employees_tenant ON employees (tenant_id, employee_id);
+
+      CREATE TRIGGER employees_provenance_immutable BEFORE UPDATE ON employees
+        WHEN NEW.reference IS NOT OLD.reference
+          OR NEW.application_id IS NOT OLD.application_id
+          OR NEW.tenant_id IS NOT OLD.tenant_id
+          OR NEW.evidence_detail IS NOT OLD.evidence_detail
+          OR NEW.hired_by IS NOT OLD.hired_by
+          OR NEW.hired_tick IS NOT OLD.hired_tick
+        BEGIN SELECT RAISE(ABORT, 'provenance-immutable'); END;
+      CREATE TRIGGER employees_no_delete BEFORE DELETE ON employees
+        BEGIN SELECT RAISE(ABORT, 'provenance-immutable'); END;
+    `
   }
 ];
 

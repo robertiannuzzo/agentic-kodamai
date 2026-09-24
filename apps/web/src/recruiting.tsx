@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import type { AdvertSchema, ApplicationRecord, Disposition } from "../../../packages/contracts/src/index";
+import type {
+  AdvertSchema,
+  ApplicationRecord,
+  Disposition,
+  EmployeeRecord
+} from "../../../packages/contracts/src/index";
 import {
   eraseApplication,
+  hireApplication,
   listApplications,
+  listPeople,
   reviewApplication,
   type AdvertDraft,
   type DemoIdentity
@@ -289,19 +296,58 @@ function EraseControl({ busy, onErase }: { busy: boolean; onErase(reason: string
   );
 }
 
+function HireControl({
+  busy,
+  defaultName,
+  onHire
+}: {
+  busy: boolean;
+  defaultName: string;
+  onHire(legalName: string, startDate: string): Promise<void>;
+}) {
+  const [legalName, setLegalName] = useState(defaultName);
+  const [startDate, setStartDate] = useState("");
+  return (
+    <div className="hire-control">
+      <p>
+        Hiring creates a people record that carries proof of this application. There is no hire without it.
+      </p>
+      <div className="form-grid">
+        <label>
+          Legal name
+          <input value={legalName} onChange={(event) => setLegalName(event.target.value)} />
+        </label>
+        <label>
+          Start date
+          <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+        </label>
+      </div>
+      <div className="button-row">
+        <button className="primary" disabled={busy} onClick={() => void onHire(legalName, startDate)}>
+          Hire
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ApplicationItem({
   record,
   identity,
+  canHire,
   onChanged
 }: {
   record: ApplicationRecord;
   identity: DemoIdentity;
+  canHire: boolean;
   onChanged(): Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const status =
-    record.erasedAt !== null
+    record.employeeId !== null
+      ? `Hired · EMP-${String(record.employeeId).padStart(4, "0")}`
+      : record.erasedAt !== null
       ? "Erased"
       : record.review === null
         ? "Awaiting decision"
@@ -375,6 +421,15 @@ function ApplicationItem({
             <small>Evidence: {record.review.evidence.detail}</small>
           </div>
         )}
+        {canHire && record.review?.disposition === "shortlist" && record.employeeId === null && record.erasedAt === null ? (
+          <HireControl
+            busy={busy}
+            defaultName={record.candidateName}
+            onHire={(legalName, startDate) =>
+              act(() => hireApplication(identity, record, { legalName, startDate }))
+            }
+          />
+        ) : null}
         {record.erasedAt === null ? null : (
           <p className="erased-line">
             Personal data erased: {record.erasureReason}. The score and evidence are kept without identifying the
@@ -421,7 +476,17 @@ function ApplicationItem({
   );
 }
 
-export function ApplicationsPanel({ identity, reference }: { identity: DemoIdentity; reference: number }) {
+export function ApplicationsPanel({
+  identity,
+  reference,
+  openPositions,
+  onHired
+}: {
+  identity: DemoIdentity;
+  reference: number;
+  openPositions: number;
+  onHired(): Promise<void>;
+}) {
   const [records, setRecords] = useState<ApplicationRecord[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
@@ -458,9 +523,66 @@ export function ApplicationsPanel({ identity, reference }: { identity: DemoIdent
       {records?.length === 0 ? <p className="empty compact">No applications yet.</p> : null}
       <ol className="application-list" aria-label="Applications">
         {records?.map((record) => (
-          <ApplicationItem key={record.applicationId} record={record} identity={identity} onChanged={load} />
+          <ApplicationItem
+            key={record.applicationId}
+            record={record}
+            identity={identity}
+            canHire={openPositions > 0}
+            onChanged={async () => {
+              await load();
+              await onHired();
+            }}
+          />
         ))}
       </ol>
+    </section>
+  );
+}
+
+/** People hired against one requisition, each with the facts it came from. */
+export function PeoplePanel({ identity, reference, hired }: { identity: DemoIdentity; reference: number; hired: number }) {
+  const [people, setPeople] = useState<EmployeeRecord[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    listPeople(identity)
+      .then((all) => {
+        if (active) setPeople(all.filter((person) => person.provenance.reference === reference));
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [identity, reference, hired]);
+
+  if (people.length === 0) return null;
+  return (
+    <section className="content-card" aria-labelledby="people-title">
+      <p className="eyebrow">People records</p>
+      <h2 id="people-title">Hired from this requisition</h2>
+      <ul className="people-list" aria-label="Hired people">
+        {people.map((person) => (
+          <li key={person.employeeId}>
+            <div>
+              <strong>{person.legalName}</strong>
+              <small>
+                EMP-{String(person.employeeId).padStart(4, "0")} · {person.role} · starts {person.startDate}
+              </small>
+            </div>
+            <ol className="provenance" aria-label={`Provenance of ${person.legalName}`}>
+              <li>
+                Scored {person.provenance.total} under {person.provenance.policyVersion} — {person.provenance.scoring.detail}
+              </li>
+              <li>
+                Shortlisted by {person.provenance.shortlist.actor} — {person.provenance.shortlist.detail}
+              </li>
+              <li>
+                Hired by {person.evidence.actor} — {person.evidence.detail}
+              </li>
+            </ol>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

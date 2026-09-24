@@ -135,6 +135,25 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(applications.nth(1).getByTestId("decision")).toHaveText("Erased");
   await expect(applications.nth(1).getByTestId("total")).toHaveText("20 / 49");
 
+  // Hire the shortlisted candidate: a people record with provenance, and the requisition fills.
+  await applications.nth(0).getByText("Ada Lovelace").click();
+  await applications.nth(0).getByLabel("Start date").fill("2026-11-02");
+  await applications.nth(0).getByRole("button", { name: "Hire" }).click();
+  await expect(applications.nth(0).getByTestId("decision")).toHaveText("Hired · EMP-0001");
+  await expect(page.getByTestId("stage")).toHaveText("Filled");
+  const provenance = page.getByRole("list", { name: "Provenance of Ada Lovelace" });
+  await expect(provenance).toContainText("Scored 46 under recruitment-score-v1");
+  await expect(provenance).toContainText("disposition:shortlist");
+  await expect(provenance).toContainText("application:1");
+
+  // A new candidate no longer sees the filled role.
+  await viewAs(page, "Candidate");
+  const newcomer = page.getByLabel("Candidate email");
+  await newcomer.fill("late@example.test");
+  await newcomer.press("Enter");
+  await expect(page.getByRole("navigation", { name: "Open roles" }).getByRole("button")).toHaveCount(0);
+  await viewAs(page, "Recruiter");
+
   // Reload: advert, applications and history come back.
   await page.reload();
   await viewAs(page, "Recruiter");

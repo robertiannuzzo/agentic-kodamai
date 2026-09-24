@@ -17,7 +17,7 @@ import {
 } from "./api";
 import { CandidateWorkspace } from "./candidate";
 import { describeError } from "./messages";
-import { AdvertPanel, ApplicationsPanel, PublishAdvertForm } from "./recruiting";
+import { AdvertPanel, ApplicationsPanel, PeoplePanel, PublishAdvertForm } from "./recruiting";
 
 const emptyFields: RequisitionFields = {
   role: "",
@@ -489,7 +489,9 @@ export function App() {
                       <h1>{selected.role}</h1>
                     </div>
                     <span className={`status-badge ${selected.stage}`} data-testid="stage">
-                      {stageLabels[selected.stage]}
+                      {selected.stage === "advertising" && selected.hired >= selected.headcount
+                        ? "Filled"
+                        : stageLabels[selected.stage]}
                     </span>
                   </div>
                   <div className="facts">
@@ -500,6 +502,9 @@ export function App() {
                     <div>
                       <span>Headcount</span>
                       <strong data-testid="headcount">{selected.headcount}</strong>
+                      {selected.hired > 0 ? (
+                        <small data-testid="hired">{selected.hired} hired</small>
+                      ) : null}
                     </div>
                     <div>
                       <span>Budget</span>
@@ -589,10 +594,19 @@ export function App() {
                 {selected.advert === null ? null : <AdvertPanel advert={selected.advert} />}
 
                 {role === "recruiter" && selected.stage === "advertising" ? (
-                  <ApplicationsPanel identity={identity} reference={selected.reference} />
+                  <ApplicationsPanel
+                  identity={identity}
+                  reference={selected.reference}
+                  openPositions={selected.headcount - selected.hired}
+                  onHired={load}
+                />
                 ) : null}
 
-                <AuditTimeline row={selected} />
+                {selected.hired > 0 ? (
+                <PeoplePanel identity={identity} reference={selected.reference} hired={selected.hired} />
+              ) : null}
+
+              <AuditTimeline row={selected} />
               </>
             )}
           </main>

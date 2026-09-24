@@ -8,6 +8,7 @@ import type {
   ApplicationRecord,
   ApplicationSubmission,
   AuditEntry,
+  EmployeeRecord,
   OpenAdvert,
   RequisitionCase,
   RequisitionStage,
@@ -61,6 +62,16 @@ export interface StoredApplication {
   evidence: AuditEntry;
   erasedAt: number | null;
   reviewed: boolean;
+  review: { disposition: "shortlist" | "reject"; evidence: AuditEntry } | null;
+  employeeId: number | null;
+}
+
+export interface HireCommit {
+  reference: number;
+  applicationId: number;
+  legalName: string;
+  startTick: number;
+  evidence: AuditEntry;
 }
 
 export const ERASED_NAME = "Erased candidate";
@@ -156,7 +167,8 @@ function parseStoredCase(payload: string): RequisitionCase {
     budgetMinor: natural(row.budgetMinor),
     justification: requiredString(row.justification),
     history: (row.history as Row[]).map((entry) => auditEntry(entry, natural(entry.reference))),
-    advert: advert ?? null
+    advert: advert ?? null,
+    hired: natural(row.hired ?? 0)
   };
 }
 
@@ -191,7 +203,7 @@ function parseStoredAcknowledgement(payload: string): ApplicationAcknowledgement
 }
 
 export function workflowCase(row: RequisitionCase): WorkflowCase {
-  const { tenantId: _tenantId, requesterId: _requesterId, ...result } = row;
+  const { tenantId: _tenantId, requesterId: _requesterId, hired: _hired, ...result } = row;
   return result;
 }
 
@@ -281,9 +293,16 @@ export class RecruitmentStore {
       histories.set(reference, [...(histories.get(reference) ?? []), auditEntry(entry, reference)]);
     }
     const schemas = this.schemas(scope, parameters);
+    const hires = new Map<number, number>();
+    for (const row of this.database
+      .prepare(`SELECT child.reference, COUNT(*) AS hired FROM employees AS child ${scope}
+        GROUP BY child.reference`)
+      .all(...parameters) as Row[]) {
+      hires.set(natural(row.reference), natural(row.hired));
+    }
     return rows.map((row) => {
       const reference = natural(row.reference);
-      return this.rowToCase(row, histories.get(reference) ?? [], schemas.get(reference) ?? null);
+      return this.rowToCase(row, histories.get(reference) ?? [], schemas.get(reference) ?? null, hires.get(reference) ?? 0);
     });
   }
 
@@ -298,7 +317,14 @@ export class RecruitmentStore {
         .all(reference) as Row[]
     ).map((entry) => auditEntry(entry, reference));
     const schemas = this.schemas("WHERE child.reference = ?", [reference]);
-    return this.rowToCase(row, history, schemas.get(reference) ?? null);
+    return this.rowToCase(row, history, schemas.get(reference) ?? null, this.hiredCount(reference));
+  }
+
+  hiredCount(reference: number): number {
+    const row = this.database
+      .prepare("SELECT COUNT(*) AS hired FROM employees WHERE reference = ?")
+      .get(reference) as Row;
+    return natural(row.hired);
   }
 
   private schemas(scope: string, parameters: Array<string | number>): Map<number, AdvertSchema> {
@@ -332,7 +358,7 @@ export class RecruitmentStore {
     return result;
   }
 
-  private rowToCase(row: Row, history: AuditEntry[], advert: AdvertSchema | null): RequisitionCase {
+  private rowToCase(row: Row, history: AuditEntry[], advert: AdvertSchema | null, hired: number): RequisitionCase {
     return {
       tenantId: requiredString(row.tenant_id),
       requesterId: requiredString(row.requester_id),
@@ -346,7 +372,8 @@ export class RecruitmentStore {
       budgetMinor: natural(row.budget_minor),
       justification: requiredString(row.justification),
       history,
-      advert
+      advert,
+      hired
     };
   }
 
@@ -476,7 +503,12 @@ export class RecruitmentStore {
         this.insertSchema(result.reference, result.advert);
       }
 
-      const response: RequisitionCase = { ...result, tenantId: context.tenantId, requesterId };
+      const response: RequisitionCase = {
+        ...result,
+        tenantId: context.tenantId,
+        requesterId,
+        hired: this.hiredCount(result.reference)
+      };
       this.recordIdempotency(context, response);
       return response;
     });
@@ -505,7 +537,9 @@ export class RecruitmentStore {
 
       const advertised = this.get(context.tenantId, input.reference);
       if (advertised === null) throw new StoreError("not-found");
-      if (advertised.stage !== "advertising") throw new StoreError("advert-closed");
+      if (advertised.stage !== "advertising" || advertised.hired >= advertised.headcount) {
+        throw new StoreError("advert-closed");
+      }
       try {
         this.database
           .prepare(`INSERT INTO applications
@@ -569,8 +603,12 @@ export class RecruitmentStore {
       .prepare("SELECT * FROM applications WHERE tenant_id = ? AND reference = ? AND application_id = ?")
       .get(tenantId, reference, applicationId) as Row | undefined;
     if (row === undefined) return null;
-    const reviewed = this.database
-      .prepare("SELECT 1 AS present FROM application_reviews WHERE reference = ? AND application_id = ?")
+    const reviewRow = this.database
+      .prepare("SELECT * FROM application_reviews WHERE reference = ? AND application_id = ?")
+      .get(reference, applicationId) as Row | undefined;
+    const review = this.review(reviewRow, reference, applicationId);
+    const employee = this.database
+      .prepare("SELECT employee_id FROM employees WHERE reference = ? AND application_id = ?")
       .get(reference, applicationId) as Row | undefined;
     return {
       reference,
@@ -608,7 +646,9 @@ export class RecruitmentStore {
         detail: requiredString(row.evidence_detail)
       },
       erasedAt: row.erased_at === null ? null : natural(row.erased_at),
-      reviewed: reviewed !== undefined
+      reviewed: review !== null,
+      review: review === null ? null : { disposition: review.disposition, evidence: review.evidence },
+      employeeId: employee === undefined ? null : natural(employee.employee_id)
     };
   }
 
@@ -727,12 +767,123 @@ export class RecruitmentStore {
     return Number(result.changes);
   }
 
+  hireIdempotencyResult(context: CommitContext): EmployeeRecord | null {
+    const payload = this.idempotencyPayload(context);
+    return payload === null ? null : (JSON.parse(payload) as EmployeeRecord);
+  }
+
+  /** Create the people record for a kernel-approved hire. */
+  commitHire(input: HireCommit, context: CommitContext): EmployeeRecord {
+    return this.transaction(() => {
+      const prior = this.idempotencyPayload(context);
+      if (prior !== null) return JSON.parse(prior) as EmployeeRecord;
+      const advertised = this.get(context.tenantId, input.reference);
+      if (advertised === null) throw new StoreError("not-found");
+      if (advertised.hired >= advertised.headcount) throw new StoreError("requisition-filled");
+      const stored = this.storedApplication(context.tenantId, input.reference, input.applicationId);
+      if (stored === null) throw new StoreError("not-found");
+      if (stored.erasedAt !== null) throw new StoreError("application-erased");
+      if (stored.review?.disposition !== "shortlist") throw new StoreError("not-shortlisted");
+      let employeeId: number;
+      try {
+        const inserted = this.database
+          .prepare(`INSERT INTO employees
+            (tenant_id, reference, application_id, legal_name, start_tick, hired_by, hired_tick,
+             evidence_revision, evidence_detail, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(
+            context.tenantId,
+            input.reference,
+            input.applicationId,
+            input.legalName,
+            input.startTick,
+            input.evidence.actor,
+            input.evidence.tick,
+            input.evidence.revision,
+            input.evidence.detail,
+            Date.now()
+          );
+        employeeId = Number(inserted.lastInsertRowid);
+      } catch (error) {
+        if (isUniqueViolation(error)) throw new StoreError("already-hired");
+        throw error;
+      }
+      const response = this.employees(context.tenantId).find((e) => e.employeeId === employeeId);
+      if (response === undefined) throw new StoreError("invalid-stored-state");
+      this.recordIdempotency(context, response);
+      return response;
+    });
+  }
+
+  /** People records, each with the application and decisions it came from. */
+  employees(tenantId: string, reference?: number): EmployeeRecord[] {
+    const rows = this.database
+      .prepare(`SELECT employees.*, requisitions.role, requisitions.department,
+          applications.total, applications.policy_version, applications.evidence_actor,
+          applications.evidence_tick, applications.evidence_revision, applications.evidence_detail AS scoring_detail,
+          application_reviews.reviewer, application_reviews.tick AS review_tick,
+          application_reviews.revision AS review_revision, application_reviews.detail AS review_detail
+        FROM employees
+        JOIN requisitions ON requisitions.reference = employees.reference
+        JOIN applications ON applications.reference = employees.reference
+          AND applications.application_id = employees.application_id
+        JOIN application_reviews ON application_reviews.reference = employees.reference
+          AND application_reviews.application_id = employees.application_id
+        WHERE employees.tenant_id = ?${reference === undefined ? "" : " AND employees.reference = ?"}
+        ORDER BY employees.employee_id`)
+      .all(...(reference === undefined ? [tenantId] : [tenantId, reference])) as Row[];
+    return rows.map((row) => {
+      const ref = natural(row.reference);
+      return {
+        employeeId: natural(row.employee_id),
+        legalName: requiredString(row.legal_name),
+        startDate: new Date(natural(row.start_tick)).toISOString().slice(0, 10),
+        role: requiredString(row.role),
+        department: requiredString(row.department),
+        provenance: {
+          reference: ref,
+          applicationId: natural(row.application_id),
+          total: natural(row.total),
+          policyVersion: requiredString(row.policy_version),
+          scoring: {
+            event: "application-scored",
+            actor: requiredString(row.evidence_actor),
+            tick: natural(row.evidence_tick),
+            reference: ref,
+            revision: natural(row.evidence_revision),
+            detail: requiredString(row.scoring_detail)
+          },
+          shortlist: {
+            event: "application-reviewed",
+            actor: requiredString(row.reviewer),
+            tick: natural(row.review_tick),
+            reference: ref,
+            revision: natural(row.review_revision),
+            detail: requiredString(row.review_detail)
+          }
+        },
+        evidence: {
+          event: "hired",
+          actor: requiredString(row.hired_by),
+          tick: natural(row.hired_tick),
+          reference: ref,
+          revision: natural(row.evidence_revision),
+          detail: requiredString(row.evidence_detail)
+        }
+      };
+    });
+  }
+
   /** Candidate view: advertised roles without expected answers, weights or budget. */
   openAdverts(tenantId: string, candidateActor: string, retentionDays = 180): OpenAdvert[] {
     const rows = this.database
       .prepare(`SELECT * FROM requisitions WHERE tenant_id = ? AND stage = 'advertising'
+          AND ((SELECT COUNT(*) FROM employees WHERE employees.reference = requisitions.reference) < headcount
+            -- A filled advert stays visible to its applicants so they can still withdraw.
+            OR EXISTS (SELECT 1 FROM applications WHERE applications.reference = requisitions.reference
+              AND applications.candidate_actor = ? AND applications.erased_at IS NULL))
         ORDER BY reference DESC`)
-      .all(tenantId) as Row[];
+      .all(tenantId, candidateActor) as Row[];
     const schemas = this.schemas(
       "JOIN requisitions ON requisitions.reference = child.reference WHERE requisitions.tenant_id = ?",
       [tenantId]
@@ -796,6 +947,13 @@ export class RecruitmentStore {
       WHERE reference = ? AND application_id = ? ORDER BY ordinal`);
     const reviews = this.database.prepare(`SELECT * FROM application_reviews
       WHERE reference = ? AND application_id = ?`);
+    const employeeIds = new Map(
+      (
+        this.database
+          .prepare("SELECT application_id, employee_id FROM employees WHERE reference = ?")
+          .all(reference) as Row[]
+      ).map((row) => [natural(row.application_id), natural(row.employee_id)] as const)
+    );
     return rows.map((row) => {
       const applicationId = natural(row.application_id);
       return {
@@ -834,7 +992,8 @@ export class RecruitmentStore {
         createdAt: natural(row.created_at),
         review: this.review(reviews.get(reference, applicationId) as Row | undefined, reference, applicationId),
         erasedAt: row.erased_at === null ? null : natural(row.erased_at),
-        erasureReason: row.erasure_reason === null ? null : text(row.erasure_reason)
+        erasureReason: row.erasure_reason === null ? null : text(row.erasure_reason),
+        employeeId: employeeIds.get(applicationId) ?? null
       };
     });
   }
