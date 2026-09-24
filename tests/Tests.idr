@@ -452,7 +452,7 @@ assessTests =
               (outcomeEvidence outcome).detail == "application:1;total:46;disposition:shortlist")))
   , ("kernel routes an assessment to its branch", withAdvert (\a => do
        stored <- storedFor a
-       (s ** outcome) <- run (kernelAgent cvLeaf) (Right (Right (a ** assessment stored Shortlist)))
+       (s ** outcome) <- run (kernelAgent cvLeaf) (Right (Right (Left (a ** assessment stored Shortlist))))
        Right (isShortlist outcome)))
   , ("altered stored workings are not reviewed", withAdvert (\a => do
        stored <- storedFor a
@@ -473,10 +473,54 @@ assessTests =
        Right (fails "reason-required" (run (assessAgent cvLeaf) (a ** assessment stored (Reject ""))))))
   ]
 
+shortlistedStore : (a : Advert) -> Either DomainError (StoredReceipt, Evidence ApplicationReviewed)
+shortlistedStore a = do
+  stored <- storedFor a
+  (_ ** outcome) <- run (assessAgent cvLeaf) (a ** assessment stored Shortlist)
+  Right (stored, outcomeEvidence outcome)
+
+hiringAs : Disposition -> StoredReceipt -> Evidence ApplicationReviewed -> String -> Hiring
+hiringAs d stored review name =
+  MkHiring (assessment stored d) review (MkContext "hr" 30) (MkStarter name 40)
+
+hiring : StoredReceipt -> Evidence ApplicationReviewed -> String -> Hiring
+hiring = hiringAs Shortlist
+
+hireKernelTests : List (String, Bool)
+hireKernelTests =
+  [ ("kernel hire rebuilds the shortlist and returns provenance", withAdvert (\a => do
+       (stored, review) <- shortlistedStore a
+       (s ** (employee ** _)) <- run (kernelAgent cvLeaf) (Right (Right (Right (a ** hiring stored review "Ada"))))
+       let (_ ** app) = provenanceOf employee
+       Right (applicationId app == 1 && totalScore s == 46 &&
+              (starterOf employee).legalName == "Ada" &&
+              (hireEvidence employee).context.actor == "hr")))
+  , ("kernel hire refuses a rejected application", withAdvert (\a => do
+       stored <- storedFor a
+       (_ ** outcome) <- run (assessAgent cvLeaf) (a ** assessment stored (Reject "No"))
+       Right (fails "not-shortlisted"
+         (run (hireKernelAgent cvLeaf) (a ** hiringAs (Reject "No") stored (outcomeEvidence outcome) "Ada")))))
+  , ("kernel hire refuses a shortlist for other workings", withAdvert (\a => do
+       (stored, review) <- shortlistedStore a
+       let forged = MkEvidence review.context review.reference review.revision
+                      "application:1;total:49;disposition:shortlist"
+       Right (fails "invalid-history"
+         (run (hireKernelAgent cvLeaf) (a ** hiring stored forged "Ada")))))
+  , ("kernel hire refuses altered stored workings", withAdvert (\a => do
+       (stored, review) <- shortlistedStore a
+       let altered = MkStoredReceipt (MkBreakdown 5 18 20 9) stored.evidence
+       Right (fails "invalid-history"
+         (run (hireKernelAgent cvLeaf) (a ** hiring altered review "Ada")))))
+  , ("kernel hire still requires a legal name", withAdvert (\a => do
+       (stored, review) <- shortlistedStore a
+       Right (fails "invalid-field:legal-name"
+         (run (hireKernelAgent cvLeaf) (a ** hiring stored review " ")))))
+  ]
+
 covering
 main : IO ()
 main = do
-  let tests = containerTests ++ workflowTests ++ dutyAndReplayTests ++ transitionTests ++ hireTests ++ slice2Tests ++ assessTests ++ schemaTests ++ intakeTests ++ codecTests ++ additionalTests ++ map generatedTest [0..100]
+  let tests = containerTests ++ workflowTests ++ dutyAndReplayTests ++ transitionTests ++ hireTests ++ slice2Tests ++ assessTests ++ hireKernelTests ++ schemaTests ++ intakeTests ++ codecTests ++ additionalTests ++ map generatedTest [0..100]
   traverse_ (\(name, passed) => putStrLn ((if passed then "PASS " else "FAIL ") ++ name)) tests
   let failures = filter (\(_, passed) => not passed) tests
   putStrLn (show (length tests) ++ " checks, " ++ show (length failures) ++ " failures")

@@ -83,7 +83,7 @@ HireC = MkCont (a : Advert ** (s : Score a ** (Shortlisted s, Context, Starter))
                          (e : Employee ** provenanceOf e = (a ** scoredApplication s)))
 ```
 
-The reply owes an employee and a proof of the application it came from. `Employee`'s constructor is private, so `hire` is the only way to produce one. `OnboardingToFollow` shows that the legacy reply (status changes only) is a type error; `WrongProvenance` shows that hiring from one application while claiming another's provenance is too. The CLI demo runs `hireAgent` after the spine and prints the provenance.
+The reply owes an employee and a proof of the application it came from. `Employee`'s constructor is private, so `hire` is the only way to produce one. `OnboardingToFollow` shows that the legacy reply (status changes only) is a type error; `WrongProvenance` shows that hiring from one application while claiming another's provenance is too. The CLI demo runs `hireAgent` after the spine and prints the provenance. Since Slice 3 the web app does too: `HireKC` is the kernel's fourth branch, delegating to `Seq AssessC (Sum StopC HireC)` so the stored score and shortlist are rebuilt before `hireAgent` runs. See [Slice 3](slice-3.md).
 
 ## Effects and lifecycle
 

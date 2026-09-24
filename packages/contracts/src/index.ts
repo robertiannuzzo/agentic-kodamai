@@ -56,6 +56,8 @@ export interface WorkflowCase extends RequisitionFields {
 export interface RequisitionCase extends WorkflowCase {
   tenantId: string;
   requesterId: string;
+  /** People hired against this requisition; it is filled at its headcount. */
+  hired: number;
 }
 
 export type ReviewDecision = "approve" | "decline" | "hold";
@@ -204,6 +206,35 @@ export interface ApplicationRecord {
   /** Set when personal data was removed (withdrawal, request, or retention). */
   erasedAt: number | null;
   erasureReason: string | null;
+  employeeId: number | null;
+}
+
+/** Hire one shortlisted application: the kernel rebuilds score and decision first. */
+export interface HireRequest {
+  assessment: AssessRequest;
+  review: AuditEntry;
+  hirer: string;
+  tick: number;
+  legalName: string;
+  startTick: number;
+}
+
+/** A people record whose provenance is the application it was hired from. */
+export interface EmployeeRecord {
+  employeeId: number;
+  legalName: string;
+  startDate: string;
+  role: string;
+  department: string;
+  provenance: {
+    reference: number;
+    applicationId: number;
+    total: number;
+    policyVersion: string;
+    scoring: AuditEntry;
+    shortlist: AuditEntry;
+  };
+  evidence: AuditEntry;
 }
 
 export interface WorkflowResult {

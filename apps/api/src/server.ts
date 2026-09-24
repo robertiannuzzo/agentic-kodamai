@@ -10,6 +10,7 @@ import type {
   ApplicationReview,
   ApplicationSubmission,
   DemoRole,
+  EmployeeRecord,
   RequisitionCase,
   RequisitionFields,
   ReviewDecision,
@@ -255,7 +256,7 @@ function advertApplicationsReference(pathname: string): number | null {
 }
 
 function applicationAction(pathname: string): { reference: number; applicationId: number; action: string } | null {
-  const match = /^\/api\/requisitions\/(\d+)\/applications\/(\d+)\/(review|erase)$/u.exec(pathname);
+  const match = /^\/api\/requisitions\/(\d+)\/applications\/(\d+)\/(review|erase|hire)$/u.exec(pathname);
   if (match?.[1] === undefined || match[2] === undefined || match[3] === undefined) return null;
   const reference = Number(match[1]);
   const applicationId = Number(match[2]);
@@ -301,7 +302,10 @@ function mapError(error: unknown): HttpError {
       error.code === "already-applied" ||
       error.code === "advert-closed" ||
       error.code === "already-reviewed" ||
-      error.code === "application-erased"
+      error.code === "application-erased" ||
+      error.code === "not-shortlisted" ||
+      error.code === "requisition-filled" ||
+      error.code === "already-hired"
     ) {
       return new HttpError(409, error.code);
     }
@@ -310,6 +314,7 @@ function mapError(error: unknown): HttpError {
   }
   const code = error instanceof WorkflowError ? error.code : "internal-server-error";
   if (code === "not-found") return new HttpError(404, code);
+  if (code === "not-shortlisted") return new HttpError(409, code);
   if (code === "self-review-forbidden") return new HttpError(403, code);
   if (code === "stale-version" || code === "wrong-stage") {
     return new HttpError(409, code);
@@ -528,6 +533,74 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
     });
   }
 
+  /**
+   * Hire one shortlisted application. The kernel's hire branch re-derives the
+   * score, re-makes the recorded shortlist and only then runs the hire link,
+   * whose reply includes proof that the employee came from this application.
+   */
+  async function hireApplication(
+    user: Identity,
+    key: string,
+    reference: number,
+    applicationId: number,
+    input: Record<string, unknown>
+  ): Promise<EmployeeRecord> {
+    const legalName = boundedText(input.legalName, "legal-name", 200);
+    const startDate = text(input.startDate, "start-date");
+    const startTick = Date.parse(`${startDate}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/u.test(startDate) || Number.isNaN(startTick)) {
+      throw new HttpError(400, "invalid-start-date");
+    }
+    const operation = `hire:${reference}:${applicationId}`;
+    const context: CommitContext = {
+      tenantId: user.tenantId,
+      actor: user.actor,
+      idempotencyKey: key,
+      operation,
+      requestFingerprint: fingerprint(operation, input)
+    };
+    return serialize(async () => {
+      const prior = store.hireIdempotencyResult(context);
+      if (prior !== null) return prior;
+      const advertised = accessible(user, reference, false);
+      const stored = store.storedApplication(user.tenantId, reference, applicationId);
+      if (stored === null) throw new HttpError(404, "not-found");
+      if (stored.erasedAt !== null) throw new HttpError(409, "application-erased");
+      if (stored.review?.disposition !== "shortlist") throw new HttpError(409, "not-shortlisted");
+      if (stored.employeeId !== null) throw new HttpError(409, "already-hired");
+      if (advertised.hired >= advertised.headcount) throw new HttpError(409, "requisition-filled");
+      const hired = await workflow.hire(workflowCase(advertised), {
+        assessment: {
+          application: {
+            applicationId,
+            actor: stored.evidence.actor,
+            tick: stored.evidence.tick,
+            cv: stored.cv,
+            answers: stored.answers,
+            years: stored.years
+          },
+          stored: { breakdown: stored.breakdown, evidence: stored.evidence },
+          reviewer: stored.review.evidence.actor,
+          tick: stored.review.evidence.tick,
+          disposition: "shortlist",
+          reason: ""
+        },
+        review: stored.review.evidence,
+        hirer: user.actor,
+        tick: Date.now(),
+        legalName,
+        startTick
+      });
+      if (hired.applicationId !== applicationId || hired.reference !== reference) {
+        throw new WorkflowError("workflow-reference-mismatch");
+      }
+      return store.commitHire(
+        { reference, applicationId, legalName: hired.legalName, startTick: hired.startTick, evidence: hired.evidence },
+        context
+      );
+    });
+  }
+
   function accessible(user: Identity, reference: number, ownerRequired: boolean): RequisitionCase {
     const row = store.get(user.tenantId, reference);
     if (row === null) throw new HttpError(404, "not-found");
@@ -602,6 +675,11 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       if (request.method === "POST" && target !== null) {
         requireRole(user.role, "recruiter");
         const input = await body(request);
+        if (target.action === "hire") {
+          const key = idempotencyKey(request);
+          json(response, 201, await hireApplication(user, key, target.reference, target.applicationId, input));
+          return;
+        }
         if (target.action === "review") {
           const key = idempotencyKey(request);
           json(response, 200, await reviewApplication(user, key, target.reference, target.applicationId, input));
@@ -617,6 +695,11 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         response.end();
         return;
       }
+      if (request.method === "GET" && url.pathname === "/api/people") {
+        json(response, 200, store.employees(user.tenantId));
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/requisitions") {
         json(response, 200, store.list(user.tenantId, user.role === "requester" ? user.actor : undefined));
         return;

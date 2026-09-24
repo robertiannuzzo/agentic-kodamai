@@ -9,7 +9,7 @@ data DomainError = InvalidField String | InvalidReference | InvalidReason
                  | InvalidSchema String | AnswerMismatch | SkillMismatch
                  | InvalidCV | ExtractionFailed | IdempotencyConflict
                  | PersistenceFailed | InvalidEncoding | NotFound | StaleVersion | WrongStage
-                 | SelfReview | InvalidHistory
+                 | SelfReview | InvalidHistory | NotShortlisted
 
 public export
 Show DomainError where
@@ -29,6 +29,7 @@ Show DomainError where
   show WrongStage = "wrong-stage"
   show SelfReview = "self-review-forbidden"
   show InvalidHistory = "invalid-history"
+  show NotShortlisted = "not-shortlisted"
 
 public export
 nonBlank : String -> Bool

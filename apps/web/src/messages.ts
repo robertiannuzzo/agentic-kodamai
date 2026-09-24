@@ -11,6 +11,11 @@ const errorMessages: Record<string, string> = {
   "privacy-notice-required": "Please confirm you have read the privacy notice.",
   "already-reviewed": "This application already has a recorded decision.",
   "application-erased": "This application's personal data has been erased.",
+  "not-shortlisted": "Only a shortlisted application can be hired.",
+  "requisition-filled": "Every position on this requisition has been filled.",
+  "already-hired": "This candidate has already been hired.",
+  "invalid-start-date": "Choose a start date.",
+  "invalid-legal-name": "Enter the new starter's legal name.",
   "rate-limited": "Too many attempts. Please wait a few minutes and try again.",
   "invalid-reason": "Give a reason.",
   "internal-server-error": "Something went wrong. The stored record may no longer match its evidence."

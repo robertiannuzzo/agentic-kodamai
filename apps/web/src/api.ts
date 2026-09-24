@@ -6,6 +6,7 @@ import type {
   ApplicationSubmission,
   Disposition,
   DemoRole,
+  EmployeeRecord,
   OpenAdvert,
   RequisitionCase,
   RequisitionFields,
@@ -157,4 +158,19 @@ export function eraseApplication(identity: DemoIdentity, record: ApplicationReco
 
 export function withdrawApplication(identity: DemoIdentity, reference: number): Promise<void> {
   return request(identity, `/api/adverts/${reference}/applications/mine`, { method: "DELETE" });
+}
+
+export function hireApplication(
+  identity: DemoIdentity,
+  record: ApplicationRecord,
+  hire: { legalName: string; startDate: string }
+): Promise<EmployeeRecord> {
+  return request(identity, `/api/requisitions/${record.reference}/applications/${record.applicationId}/hire`, {
+    method: "POST",
+    body: JSON.stringify(hire)
+  });
+}
+
+export function listPeople(identity: DemoIdentity): Promise<EmployeeRecord[]> {
+  return request(identity, "/api/people");
 }
