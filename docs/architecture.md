@@ -4,13 +4,18 @@
 
 One application, a small mathematical-container module, a pure domain core, application services and deterministic adapters. The preparation documents motivate prompt-dependent replies and composable handlers. The implemented container algebra is described in [the walkthrough](containers.md).
 
+Slice 1 introduces a React interface and TypeScript HTTP boundary for requisitions and approvals. Protected writes cross a versioned process boundary into the compiled Idris workflow executable. SQLite retains an append-only command log and read projection; startup replay through Idris validates durable reconstruction. See [the Slice 1 design](slice-1.md).
+
 ```mermaid
 flowchart LR
-  CLI[CLI / future HTTP adapter] --> Spine[Composed container spine]
+  Web[React requester / approver UI] --> API[TypeScript HTTP boundary]
+  API --> Worker[Idris workflow executable]
+  Worker --> Workflow[Workflow use cases]
+  API --> SQLite[(SQLite command log + projection)]
+  CLI[CLI demonstration] --> Spine[Composed container spine]
   Spine --> Core[Pure typed domain core]
-  CLI --> Workflow[Workflow use cases]
   CLI --> Intake[Application intake]
-  Workflow --> Core[Pure typed domain core]
+  Workflow --> Core
   Intake --> Core
   Workflow --> Cases[Case repository port]
   Intake --> Scores[Score-once repository port]
@@ -33,6 +38,8 @@ flowchart LR
 The type of `Extractor.extract` is `(input : CVInput) -> Either DomainError (CVText input)`: its reply depends on its prompt. The repository and workflow APIs similarly use prompt-dependent values. `ExtractionC` and `extractionAgent` expose that port as a mathematical container and direct-answer handler. The five-link `Spine` composes domain agents with sequence and sum; operational use cases retain state across separate actions.
 
 ## Persistence and concurrency
+
+For Slice 1, SQLite stores an append-only log of versioned workflow commands, a requisition projection, and ordinal audit entries. The TypeScript boundary replays the complete command log through the Idris executable before every protected write and on startup. A database transaction then persists the accepted command, updated projection, and new evidence together. Expected generations are checked in Idris and again in the transaction. In-process serialization prevents overlapping writes in the local server; PostgreSQL transactions and tenant-aware constraints remain required for a horizontally scaled deployment.
 
 `CaseRepository` stores a case aggregate with stage, generation and audit history. `start` obtains a proposed fresh reference and inserts generation zero. `review`, `resubmit`, and `advertise` load the current generation, enforce the current stage, and commit via compare-and-swap. Generation advances on every transition; requisition revision advances only on rework. A losing concurrent writer must retry from a fresh load. Reference allocation collisions are also rejected by commit. One advert per requisition is the phase-1 policy; its numeric ID is the requisition reference.
 

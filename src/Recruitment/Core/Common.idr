@@ -42,11 +42,13 @@ validContext : Context -> Either DomainError ()
 validContext c = if nonBlank c.actor then Right () else Left (InvalidField "actor")
 
 public export
-data Event = Submitted | ApprovedEvent | DeclinedEvent | HeldEvent
+data Event = DraftCreated | DraftUpdated | Submitted | ApprovedEvent | DeclinedEvent | HeldEvent
            | Revised | AdvertCreated | ApplicationScored
 
 public export
 Show Event where
+  show DraftCreated = "draft-created"
+  show DraftUpdated = "draft-updated"
   show Submitted = "submitted"
   show ApprovedEvent = "approved"
   show DeclinedEvent = "declined"

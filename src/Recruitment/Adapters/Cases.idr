@@ -33,3 +33,7 @@ commitCase expected row (Cases next rows) =
 export
 caseRepository : CaseRepository CaseMemory
 caseRepository = MkCaseRepository (\(Cases next _) => next) loadCase commitCase
+
+export
+caseRows : CaseMemory -> List CaseRecord
+caseRows (Cases _ rows) = rows

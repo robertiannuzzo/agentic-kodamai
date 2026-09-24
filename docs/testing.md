@@ -41,4 +41,6 @@ No third-party Idris formatter is pinned. The dependency-free hygiene check enfo
 
 On 2026-09-18, macOS with Idris `0.8.0-fd405085b` and Chez: all 195 runtime checks, one positive fixture, 14 negative fixtures, hygiene checks and executable smoke passed. The direct compiler path was used because the installed package-manager wrapper writes to its global cache.
 
+On 2026-09-23, the Slice 1 integration suite additionally passed the requester-to-approver rework flow, role refusal, stale-generation refusal, Unicode and multiline protocol transport, invalid-field propagation, SQLite restart, and full command-log reconstruction through the Idris worker. The React production bundle and TypeScript API compiled successfully.
+
 The project-local compiler bootstrap and GitHub Actions run have not been executed end-to-end here. The pinned source archive checksum was verified; local tests used the matching installed compiler. There are no deployment-container checks.

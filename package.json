@@ -1,0 +1,33 @@
+{
+  "name": "agentic-kodamai",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "build": "npm run build:workflow && npm run build:api && npm run build:web",
+    "build:workflow": "make workflow",
+    "build:api": "tsc -p apps/api/tsconfig.json",
+    "build:web": "vite build --config apps/web/vite.config.ts",
+    "dev:api": "tsx watch apps/api/src/main.ts",
+    "dev:web": "vite --config apps/web/vite.config.ts",
+    "test": "npm run test:core && npm run test:integration",
+    "test:core": "python3 scripts/test.py",
+    "test:integration": "npm run build:workflow && tsc -p apps/api/tsconfig.test.json && node --test build/api-test/apps/api/src/*.test.js",
+    "start": "node build/api/apps/api/src/main.js"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.6",
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
+  }
+}
