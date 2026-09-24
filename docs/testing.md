@@ -53,6 +53,8 @@ On 2026-09-23, Slice 1.1 replaced global command replay with checked single-aggr
 
 On 2026-09-24, the core suite passed 213 runtime checks, one positive fixture and 17 negative fixtures. Ten HTTP integration tests passed, adding self-review refusal through the role switch and refusal of a directly tampered SQLite row whose forged `held` fact names the submitter as reviewer.
 
+Hardening 3.1 (2026-09-24), after an external review: 24 HTTP tests add a check that no candidate identity survives erasure in any application or people response, an idempotent retry replayed under an exhausted rate limit, impossible calendar dates refused, and every provenance column tested against its trigger. A fourth browser journey delays one candidate's response and proves it cannot overwrite the next candidate's view; it fails when the stale-response guard is removed.
+
 Slice 3 (2026-09-24): 239 runtime checks, 20 negative fixtures; 20 HTTP tests adding hires with provenance, filled requisitions, closed adverts, immutable people records and refusal after a stored shortlist is altered; the advert browser journey ends with a hire and its provenance.
 
 Slice 2.1 (2026-09-24): 234 runtime checks, one positive fixture and 20 negative fixtures; 18 HTTP tests adding recorded decisions, refusal to review altered stored workings, withdrawal, recruiter erasure, erasure-only triggers, retention, idempotency expiry and rate limiting; three Playwright journeys using role, label and test-ID locators, with decisions and withdrawal in the advert journey.

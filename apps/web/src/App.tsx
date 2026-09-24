@@ -1,5 +1,5 @@
 import { Plus, Search } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DemoRole, RequisitionCase, RequisitionFields } from "../../../packages/contracts/src/index";
 import { createDraft, listRequisitions, type DemoIdentity } from "./api";
 import { CandidateWorkspace } from "./candidate";
@@ -63,7 +63,11 @@ export function App() {
   const queueEmpty =
     role === "approver" ? "Nothing is waiting for your review." : "No approved requisitions are waiting for an advert.";
 
+  // Only the latest request may update state: a slower response for an earlier
+  // role must not overwrite what the current role should see.
+  const generation = useRef(0);
   const load = useCallback(async () => {
+    const current = ++generation.current;
     if (identity.role === "candidate") {
       setRows([]);
       setLoading(false);
@@ -72,19 +76,23 @@ export function App() {
     setError(null);
     try {
       const result = await listRequisitions(identity);
+      if (current !== generation.current) return;
       setRows(result);
       const waiting = queueFor(identity.role, identity.actor, result)[0];
       setSelectedReference((current) =>
         result.some(({ reference: ref }) => ref === current) ? current : (waiting ?? result[0])?.reference ?? null
       );
     } catch (failure) {
+      if (current !== generation.current) return;
       setError(describeError(failure instanceof Error ? failure.message : "request-failed"));
     } finally {
-      setLoading(false);
+      if (current === generation.current) setLoading(false);
     }
   }, [identity]);
 
   useEffect(() => {
+    // Requisitions are identity-scoped: drop the previous role's rows at once.
+    setRows([]);
     setLoading(true);
     void load();
   }, [load]);

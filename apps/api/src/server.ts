@@ -248,6 +248,24 @@ function submission(input: Record<string, unknown>): ApplicationSubmission {
   };
 }
 
+/** A real calendar date as UTC midnight; JavaScript would roll 2026-02-31 into March. */
+function calendarDate(value: string): number {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+  const [year, month, day] = [Number(match?.[1]), Number(match?.[2]), Number(match?.[3])];
+  const tick = Date.UTC(year, month - 1, day);
+  const date = new Date(tick);
+  if (
+    match === null ||
+    Number.isNaN(tick) ||
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    throw new HttpError(400, "invalid-start-date");
+  }
+  return tick;
+}
+
 function advertApplicationsReference(pathname: string): number | null {
   const match = /^\/api\/adverts\/(\d+)\/applications$/u.exec(pathname);
   if (match?.[1] === undefined) return null;
@@ -449,6 +467,10 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       requestFingerprint: fingerprint(`apply:${reference}`, input)
     };
     const application = submission(input);
+    // A retry of a request that already succeeded replays its stored response
+    // and must not spend rate-limit capacity or be refused by it.
+    const replayed = store.applicationIdempotencyResult(context);
+    if (replayed !== null) return replayed;
     const now = Date.now();
     const address = request.socket.remoteAddress ?? "unknown";
     if (
@@ -550,11 +572,7 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
     input: Record<string, unknown>
   ): Promise<EmployeeRecord> {
     const legalName = boundedText(input.legalName, "legal-name", 200);
-    const startDate = text(input.startDate, "start-date");
-    const startTick = Date.parse(`${startDate}T00:00:00Z`);
-    if (!/^\d{4}-\d{2}-\d{2}$/u.test(startDate) || Number.isNaN(startTick)) {
-      throw new HttpError(400, "invalid-start-date");
-    }
+    const startTick = calendarDate(text(input.startDate, "start-date"));
     const operation = `hire:${reference}:${applicationId}`;
     const context: CommitContext = {
       tenantId: user.tenantId,

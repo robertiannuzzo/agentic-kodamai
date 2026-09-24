@@ -1,5 +1,5 @@
 import { ArrowRight, Briefcase, CircleCheck, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { ApplicationSubmission, OpenAdvert } from "../../../packages/contracts/src/index";
 import { applyToAdvert, listOpenAdverts, withdrawApplication, type DemoIdentity } from "./api";
 
@@ -134,19 +134,26 @@ export function CandidateWorkspace({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Adverts carry per-candidate "applied" state: ignore responses for an
+  // earlier candidate identity and clear its data immediately.
+  const generation = useRef(0);
   const load = useCallback(async () => {
+    const current = ++generation.current;
+    setAdverts([]);
     setLoading(true);
     setError(null);
     try {
       const result = await listOpenAdverts(identity);
+      if (current !== generation.current) return;
       setAdverts(result);
       setSelected((current) =>
         result.some(({ reference }) => reference === current) ? current : result[0]?.reference ?? null
       );
     } catch (failure) {
+      if (current !== generation.current) return;
       setError(describeError(failure instanceof Error ? failure.message : "request-failed"));
     } finally {
-      setLoading(false);
+      if (current === generation.current) setLoading(false);
     }
   }, [identity, describeError]);
 
