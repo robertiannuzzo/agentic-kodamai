@@ -2,6 +2,7 @@ module Recruitment.Application.Spine
 
 import public Recruitment.Container
 import public Recruitment.Application.Scoring
+import public Recruitment.Core.Hire
 
 %default total
 
@@ -197,3 +198,14 @@ recruitmentHandler = MkHandler spinePrompt summarize
 public export
 recruitmentAgent : Agent RecruitmentC
 recruitmentAgent = compose recruitmentHandler spineAgent
+
+||| Stage 2's link: hire consumes a score and must return the employee together
+||| with proof of the application it came from.
+public export
+HireC : Cont
+HireC = MkCont (a : Advert ** (Score a, Context, Starter))
+  (\(a ** (s, _, _)) => Either DomainError (e : Employee ** provenanceOf e = (a ** scoredApplication s)))
+
+public export
+hireAgent : Agent HireC
+hireAgent = answers (\(a ** (s, c, starter)) => hire a s c starter)

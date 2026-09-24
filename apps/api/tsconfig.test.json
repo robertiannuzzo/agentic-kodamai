@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../build/api-test"
+  },
+  "include": ["src/**/*.ts", "../../packages/contracts/src/**/*.ts"],
+  "exclude": []
+}

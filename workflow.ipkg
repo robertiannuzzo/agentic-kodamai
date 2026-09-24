@@ -1,0 +1,6 @@
+package recruitment-workflow
+version = 0.1.0
+sourcedir = "src"
+main = WorkflowMain
+executable = recruitment-workflow
+opts = "--total -Werror"

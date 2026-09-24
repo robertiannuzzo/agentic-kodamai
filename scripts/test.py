@@ -73,7 +73,8 @@ def main():
     print(output.splitlines()[-1], flush=True)
     print(run([COMPILER, '--build', 'demo.ipkg']), end='')
     output = run([ROOT / 'build/exec/recruitment-demo'])
-    if 'Total: 46' not in output or 'Audit: advert:1;application:1;policy:recruitment-score-v1' not in output:
+    if ('Total: 46' not in output or 'Audit: advert:1;application:1;policy:recruitment-score-v1' not in output
+            or 'Hired: Ada Candidate from advert 1, application 1' not in output):
         raise RuntimeError(f'Unexpected demo output:\n{output}')
     print('PASS CLI build/start smoke test', flush=True)
     print(f'PASS all checks; logs: {LOGS.relative_to(ROOT)}')

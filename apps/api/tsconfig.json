@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM"],
+    "rootDir": "../..",
+    "outDir": "../../build/api",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "../../packages/contracts/src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

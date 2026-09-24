@@ -1,5 +1,9 @@
 .DS_Store
 build/
+node_modules/
 tmp/
 .env
+var/
 Prep docs/
+test-results/
+playwright-report/

@@ -3,6 +3,7 @@ module Tests
 import Recruitment.Example
 import ContainerTests
 import Recruitment.Adapters.Codec
+import Recruitment.Adapters.Transition
 import Data.List
 import System
 
@@ -18,6 +19,10 @@ fails _ _ = False
 
 context : Context
 context = MkContext "tester" 10
+
+||| Separation of duties: reviews come from a different actor than submissions.
+reviewer : Context
+reviewer = MkContext "reviewer" 11
 
 extractor : Extractor
 extractor = mockExtractor [(exampleCV, "Idris and SQL experience")]
@@ -47,17 +52,17 @@ workflowTests =
   , ("decline and hold need reasons", ok (do
        draft <- newDraft exampleFields
        (r ** pending) <- submit context 1 draft
-       Right (fails "reason-required" (decide r pending context (Decline " ")) &&
-              fails "reason-required" (decide r pending context (Hold "\n")))))
+       Right (fails "reason-required" (decide r pending reviewer (Decline " ")) &&
+              fails "reason-required" (decide r pending reviewer (Hold "\n")))))
   , ("decline audit retained", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
-       (denied, _) <- review caseRepository row.reference 0 context (Decline "No budget") state
+       (denied, _) <- review caseRepository row.reference 0 reviewer (Decline "No budget") state
        case denied.stage of
          Rejected r ev => Right (ev.detail == "No budget" && ev.reference == r.reference && length denied.history == 2)
          _ => Right False))
   , ("hold rework same reference new revision and audit", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
-       (held, state) <- review caseRepository row.reference 0 context (Hold "Reduce budget") state
+       (held, state) <- review caseRepository row.reference 0 reviewer (Hold "Reduce budget") state
        (revised, state) <- resubmit caseRepository row.reference held.generation context
                             (MkFields "R" "D" 1 1 "Revised") state
        case revised.stage of
@@ -67,23 +72,23 @@ workflowTests =
          _ => Right False))
   , ("stale decision rejected", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
-       (_, state) <- review caseRepository row.reference 0 context Approve state
-       Right (fails "stale-version" (review caseRepository row.reference 0 context (Hold "Late") state))))
+       (_, state) <- review caseRepository row.reference 0 reviewer Approve state
+       Right (fails "stale-version" (review caseRepository row.reference 0 reviewer (Hold "Late") state))))
   , ("approved cannot be decided again", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
-       (approved, state) <- review caseRepository row.reference 0 context Approve state
-       Right (fails "wrong-stage" (review caseRepository row.reference approved.generation context Approve state))))
+       (approved, state) <- review caseRepository row.reference 0 reviewer Approve state
+       Right (fails "wrong-stage" (review caseRepository row.reference approved.generation reviewer Approve state))))
   , ("advert before approval refused at use case", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
        Right (fails "wrong-stage" (advertise caseRepository row.reference 0 context exampleQuestions exampleSkills state))))
-  , ("unknown requisition", fails "not-found" (review caseRepository 99 0 context Approve emptyCases))
+  , ("unknown requisition", fails "not-found" (review caseRepository 99 0 reviewer Approve emptyCases))
   , ("reference allocation unique", ok (do
        (one, state) <- start caseRepository context exampleFields emptyCases
        (two, _) <- start caseRepository context exampleFields state
        Right (one.reference == 1 && two.reference == 2)))
   , ("CAS catches stale adapter write", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
-       (_, state) <- review caseRepository row.reference 0 context Approve state
+       (_, state) <- review caseRepository row.reference 0 reviewer Approve state
        Right (fails "stale-version" (caseRepository.commit (Just 0) row state))))
   ]
 
@@ -91,7 +96,7 @@ schemaTest : List Question -> List Skill -> String -> Bool
 schemaTest questions skills expected = ok (do
   draft <- newDraft exampleFields
   (r ** pending) <- submit context 1 draft
-  ruling <- decide r pending context Approve
+  ruling <- decide r pending reviewer Approve
   case ruling of
     Granted approved => Right (fails expected (publish r approved context 1 questions skills))
     _ => Right False)
@@ -190,7 +195,7 @@ additionalTests : List (String, Bool)
 additionalTests =
   [ ("declined requisition cannot publish", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
-       (denied, state) <- review caseRepository row.reference 0 context (Decline "No budget") state
+       (denied, state) <- review caseRepository row.reference 0 reviewer (Decline "No budget") state
        Right (fails "wrong-stage" (advertise caseRepository row.reference denied.generation
                context exampleQuestions exampleSkills state))))
   , ("rework only after hold", ok (do
@@ -198,7 +203,7 @@ additionalTests =
        Right (fails "wrong-stage" (resubmit caseRepository row.reference 0 context exampleFields state))))
   , ("publish returns required approval and advert audit history", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
-       (approved, state) <- review caseRepository row.reference 0 context Approve state
+       (approved, state) <- review caseRepository row.reference 0 reviewer Approve state
        (published, _) <- advertise caseRepository row.reference approved.generation context
                           exampleQuestions exampleSkills state
        case (approved.stage, published.stage) of
@@ -208,7 +213,7 @@ additionalTests =
          _ => Right False))
   , ("same requisition cannot publish twice", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
-       (approved, state) <- review caseRepository row.reference 0 context Approve state
+       (approved, state) <- review caseRepository row.reference 0 reviewer Approve state
        (published, state) <- advertise caseRepository row.reference approved.generation context
                               exampleQuestions exampleSkills state
        Right (fails "wrong-stage" (advertise caseRepository row.reference published.generation context
@@ -246,10 +251,95 @@ generatedTest n = ("generated years/round-trip invariant " ++ show n, withAdvert
          b.screening == next.screening && b.keywords == next.keywords &&
          b.completeness == 3 && roundTrip raw)))
 
+submitted : Nat -> Fact
+submitted rev = (Submitted ** MkEvidence context 1 rev exampleFields.justification)
+
+approvedBy : Context -> Nat -> Fact
+approvedBy c rev = (ApprovedEvent ** MkEvidence c 1 rev "approved")
+
+isAccepted : Stage -> Bool
+isAccepted (Accepted r _) = r.revision == 0
+isAccepted _ = False
+
+dutyAndReplayTests : List (String, Bool)
+dutyAndReplayTests =
+  [ ("submitter cannot rule on own submission", ok (do
+       draft <- newDraft exampleFields
+       (r ** pending) <- submit context 1 draft
+       Right (fails "self-review-forbidden" (decide r pending context Approve) &&
+              fails "self-review-forbidden" (decide r pending (MkContext " tester " 12) (Hold "x")))))
+  , ("self review refused at use case", ok (do
+       (row, state) <- start caseRepository context exampleFields emptyCases
+       Right (fails "self-review-forbidden" (review caseRepository row.reference 0 context Approve state))))
+  , ("replay rebuilds approved stage", ok (do
+       (row, state) <- start caseRepository context exampleFields emptyCases
+       (approved, _) <- review caseRepository row.reference 0 reviewer Approve state
+       stage <- restoreStage row.reference exampleFields approved.history
+       Right (isAccepted stage)))
+  , ("replay rebuilds reworked revision", ok (do
+       (row, state) <- start caseRepository context exampleFields emptyCases
+       (held, state) <- review caseRepository row.reference 0 reviewer (Hold "Smaller") state
+       let revisedFields = MkFields "R" "D" 1 1 "Revised"
+       (revised, _) <- resubmit caseRepository row.reference held.generation context revisedFields state
+       stage <- restoreStage row.reference revisedFields revised.history
+       case stage of
+         AwaitingReview r _ => Right (r.revision == 1)
+         _ => Right False))
+  , ("replay refuses self-approval history", fails "invalid-history"
+       (restoreStage 1 exampleFields [submitted 0, approvedBy context 0]))
+  , ("replay refuses approval without submission", fails "invalid-history"
+       (restoreStage 1 exampleFields [(DraftCreated ** MkEvidence context 1 0 exampleFields.justification),
+                                       approvedBy reviewer 0]))
+  , ("replay refuses approval of another revision", fails "invalid-history"
+       (restoreStage 1 exampleFields [submitted 0, approvedBy reviewer 1]))
+  , ("replay refuses facts about another requisition", fails "invalid-history"
+       (restoreStage 2 exampleFields [submitted 0, approvedBy reviewer 0]))
+  , ("replay refuses fields that were never submitted", fails "invalid-history"
+       (restoreStage 1 (MkFields "R" "D" 1 1 "Swapped") [submitted 0, approvedBy reviewer 0]))
+  , ("replay refuses empty history", fails "invalid-history" (restoreStage 1 exampleFields []))
+  , ("replay accepts legitimate approval", ok (do
+       stage <- restoreStage 1 exampleFields [submitted 0, approvedBy reviewer 0]
+       Right (isAccepted stage)))
+  ]
+
+transitionTests : List (String, Bool)
+transitionTests =
+  [ ("transition agent creates requested reference", ok (do
+       created <- run transitionAgent (Nothing, CreateDraft 5 context exampleFields)
+       Right (created.row.reference == 5 && created.row.generation == 0)))
+  , ("transition agent refuses create over existing", ok (do
+       created <- run transitionAgent (Nothing, CreateDraft 5 context exampleFields)
+       Right (fails "stale-version" (run transitionAgent (Just created.row, CreateDraft 5 context exampleFields)))))
+  , ("transition agent refuses missing aggregate", fails "not-found"
+       (run transitionAgent (Nothing, Review 5 1 reviewer Approve)))
+  , ("transition agent refuses mismatched path reference", ok (do
+       created <- run transitionAgent (Nothing, CreateDraft 5 context exampleFields)
+       Right (fails "not-found" (run transitionAgent (Just created.row, SubmitDraft 6 0 context)))))
+  , ("transition agent routes submit then review", ok (do
+       created <- run transitionAgent (Nothing, CreateDraft 5 context exampleFields)
+       sent <- run transitionAgent (Just created.row, SubmitDraft 5 0 context)
+       decided <- run transitionAgent (Just sent.row, Review 5 1 reviewer Approve)
+       Right (decided.row.generation == 2 && isAccepted decided.row.stage &&
+              fails "self-review-forbidden" (run transitionAgent (Just sent.row, Review 5 1 context Approve)))))
+  ]
+
+hireTests : List (String, Bool)
+hireTests =
+  [ ("hire returns employee with application provenance", withAdvert (\a => do
+       (receipt, _) <- applyAndScore a memoryRepository extractor context exampleRaw empty
+       (employee ** _) <- hire a receipt.score reviewer (MkStarter "Ada" 20)
+       let (source ** app) = provenanceOf employee
+       Right (applicationId app == 1 && advertId source == advertId a &&
+              (hireEvidence employee).detail == "advert:1;application:1")))
+  , ("hire requires a legal name", withAdvert (\a => do
+       (receipt, _) <- applyAndScore a memoryRepository extractor context exampleRaw empty
+       Right (fails "invalid-field:legal-name" (hire a receipt.score reviewer (MkStarter " " 20)))))
+  ]
+
 covering
 main : IO ()
 main = do
-  let tests = containerTests ++ workflowTests ++ schemaTests ++ intakeTests ++ codecTests ++ additionalTests ++ map generatedTest [0..100]
+  let tests = containerTests ++ workflowTests ++ dutyAndReplayTests ++ transitionTests ++ hireTests ++ schemaTests ++ intakeTests ++ codecTests ++ additionalTests ++ map generatedTest [0..100]
   traverse_ (\(name, passed) => putStrLn ((if passed then "PASS " else "FAIL ") ++ name)) tests
   let failures = filter (\(_, passed) => not passed) tests
   putStrLn (show (length tests) ++ " checks, " ++ show (length failures) ++ " failures")
