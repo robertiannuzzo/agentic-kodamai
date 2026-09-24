@@ -59,4 +59,4 @@ Slice 2 (2026-09-24): 226 runtime checks, one positive fixture and 19 negative f
 
 The same day, two Playwright journeys passed against the production build in Chrome (`make e2e`).
 
-The project-local compiler bootstrap and GitHub Actions run have not been executed end-to-end here. The pinned source archive checksum was verified; local tests used the matching installed compiler. There are no deployment-container checks.
+On 2026-09-24 GitHub Actions ran end to end for Slice 1.1, 2 and 2.1: project-local compiler bootstrap from the pinned, checksummed archive on Ubuntu 24.04, `make test`, the production build and Playwright in Chromium on Node 24, all passing in 9–11 minutes. Local runs used the matching installed compiler on macOS with Node 22. There are no deployment-container checks.
