@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 async function viewAs(page: Page, role: "Requester" | "Approver"): Promise<void> {
-  await page.getByRole("group", { name: "Display currency" }).waitFor();
+  await page.getByLabel("Demo role").waitFor();
   await page.getByLabel("Demo role").getByRole("button", { name: role }).click();
 }
 
@@ -23,7 +23,7 @@ test("requester and approver complete the rework-and-approval journey", async ({
 
   // Requester creates, edits and submits a draft.
   await viewAs(page, "Requester");
-  await page.getByRole("button", { name: "Create first requisition" }).click();
+  await page.getByRole("button", { name: "New requisition" }).click();
   await fillFields(page, {
     role: "Platform Engineer",
     department: "Engineering",

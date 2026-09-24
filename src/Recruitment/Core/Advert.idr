@@ -1,6 +1,7 @@
 module Recruitment.Core.Advert
 
 import public Recruitment.Core.Requisition
+import Data.Bits
 import Data.List
 
 %default total
@@ -46,6 +47,40 @@ export
 advertEvidence : Advert -> Evidence AdvertCreated
 advertEvidence (Published _ _ _ _ _ ev) = ev
 
+-- FNV-1a (64-bit) over Unicode code points. It binds evidence to content so a
+-- changed stored schema no longer matches its publication evidence. It is a
+-- fingerprint, not a cryptographic signature: authenticity stays external.
+fnvPrime : Bits64
+fnvPrime = 1099511628211
+
+fnvOffset : Bits64
+fnvOffset = 14695981039346656037
+
+fnv : Bits64 -> List Char -> Bits64
+fnv hash [] = hash
+fnv hash (c :: cs) = fnv ((hash `xor` cast (ord c)) * fnvPrime) cs
+
+hexDigit : Bits64 -> Char
+hexDigit d = if d < 10 then chr (ord '0' + cast d) else chr (ord 'a' + cast d - 10)
+
+hex : Nat -> Bits64 -> List Char -> List Char
+hex Z _ acc = acc
+hex (S k) value acc = hex k (value `div` 16) (hexDigit (value `mod` 16) :: acc)
+
+field : String -> String
+field s = show (length (unpack s)) ++ ":" ++ s ++ ","
+
+canonical : List Question -> List Skill -> String
+canonical qs ss =
+  concatMap (\q => field (show q.questionId) ++ field q.prompt ++ field q.expected) qs ++ "|" ++
+  concatMap (\s => field (show s.skillId) ++ field s.keyword ++ field (show s.weight) ++
+                   field (show s.targetYears)) ss
+
+||| Content fingerprint of an ordered question and skill schema.
+export
+schemaFingerprint : List Question -> List Skill -> String
+schemaFingerprint qs ss = pack (hex 16 (fnv fnvOffset (unpack (canonical qs ss))) [])
+
 unique : List Nat -> Bool
 unique [] = True
 unique (x :: xs) = not (elem x xs) && unique xs
@@ -64,4 +99,5 @@ publish r approved c ident qs ss = do
     else if not (all (\s => s.skillId > 0 && nonBlank s.keyword && s.weight > 0 && s.targetYears > 0) ss)
       then Left (InvalidSchema "skill")
     else Right (Published r approved ident qs ss
-               (MkEvidence c r.reference r.revision ("advert:" ++ show ident)))
+               (MkEvidence c r.reference r.revision
+                 ("advert:" ++ show ident ++ ";schema:" ++ schemaFingerprint qs ss)))

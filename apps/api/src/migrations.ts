@@ -87,6 +87,103 @@ const migrations: readonly Migration[] = [
     sql: `
       ALTER TABLE command_log RENAME TO legacy_command_log;
     `
+  },
+  {
+    version: 4,
+    name: "frozen-adverts-and-scored-applications",
+    sql: `
+      CREATE TABLE advert_questions (
+        reference INTEGER NOT NULL REFERENCES requisitions(reference),
+        ordinal INTEGER NOT NULL,
+        question_id INTEGER NOT NULL,
+        prompt TEXT NOT NULL,
+        expected TEXT NOT NULL,
+        PRIMARY KEY (reference, ordinal)
+      );
+
+      CREATE TABLE advert_skills (
+        reference INTEGER NOT NULL REFERENCES requisitions(reference),
+        ordinal INTEGER NOT NULL,
+        skill_id INTEGER NOT NULL,
+        keyword TEXT NOT NULL,
+        weight INTEGER NOT NULL,
+        target_years INTEGER NOT NULL,
+        PRIMARY KEY (reference, ordinal)
+      );
+
+      CREATE TABLE application_sequence (
+        reference INTEGER PRIMARY KEY REFERENCES requisitions(reference),
+        next_id INTEGER NOT NULL CHECK (next_id > 0)
+      );
+
+      CREATE TABLE applications (
+        reference INTEGER NOT NULL REFERENCES requisitions(reference),
+        application_id INTEGER NOT NULL,
+        tenant_id TEXT NOT NULL,
+        candidate_actor TEXT NOT NULL,
+        candidate_name TEXT NOT NULL,
+        cv_locator TEXT NOT NULL,
+        cv_version TEXT NOT NULL,
+        cv_text TEXT NOT NULL,
+        consented_at INTEGER NOT NULL,
+        keywords INTEGER NOT NULL,
+        experience INTEGER NOT NULL,
+        screening INTEGER NOT NULL,
+        completeness INTEGER NOT NULL,
+        total INTEGER NOT NULL,
+        policy_version TEXT NOT NULL,
+        evidence_actor TEXT NOT NULL,
+        evidence_tick INTEGER NOT NULL,
+        evidence_revision INTEGER NOT NULL,
+        evidence_detail TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (reference, application_id),
+        UNIQUE (reference, candidate_actor)
+      );
+
+      CREATE TABLE application_answers (
+        reference INTEGER NOT NULL,
+        application_id INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL,
+        question_id INTEGER NOT NULL,
+        answer TEXT NOT NULL,
+        PRIMARY KEY (reference, application_id, ordinal),
+        FOREIGN KEY (reference, application_id) REFERENCES applications(reference, application_id)
+      );
+
+      CREATE TABLE application_experience (
+        reference INTEGER NOT NULL,
+        application_id INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL,
+        skill_id INTEGER NOT NULL,
+        years INTEGER NOT NULL,
+        PRIMARY KEY (reference, application_id, ordinal),
+        FOREIGN KEY (reference, application_id) REFERENCES applications(reference, application_id)
+      );
+
+      -- Published schemas and scored applications are immutable facts. The Idris
+      -- replay detects a changed schema; these triggers refuse the change first.
+      CREATE TRIGGER advert_questions_frozen_update BEFORE UPDATE ON advert_questions
+        BEGIN SELECT RAISE(ABORT, 'advert-frozen'); END;
+      CREATE TRIGGER advert_questions_frozen_delete BEFORE DELETE ON advert_questions
+        BEGIN SELECT RAISE(ABORT, 'advert-frozen'); END;
+      CREATE TRIGGER advert_skills_frozen_update BEFORE UPDATE ON advert_skills
+        BEGIN SELECT RAISE(ABORT, 'advert-frozen'); END;
+      CREATE TRIGGER advert_skills_frozen_delete BEFORE DELETE ON advert_skills
+        BEGIN SELECT RAISE(ABORT, 'advert-frozen'); END;
+      CREATE TRIGGER applications_immutable_update BEFORE UPDATE ON applications
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+      CREATE TRIGGER applications_immutable_delete BEFORE DELETE ON applications
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+      CREATE TRIGGER application_answers_immutable_update BEFORE UPDATE ON application_answers
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+      CREATE TRIGGER application_answers_immutable_delete BEFORE DELETE ON application_answers
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+      CREATE TRIGGER application_experience_immutable_update BEFORE UPDATE ON application_experience
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+      CREATE TRIGGER application_experience_immutable_delete BEFORE DELETE ON application_experience
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+    `
   }
 ];
 

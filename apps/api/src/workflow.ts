@@ -4,8 +4,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type {
+  AdvertQuestion,
+  AdvertSkill,
   AuditEntry,
+  IntakeRequest,
   RequisitionFields,
+  RequisitionStage,
+  ScoreReceipt,
   WorkflowCase,
   WorkflowCommand,
   WorkflowResult
@@ -54,6 +59,9 @@ export function decodeFrames(input: string): string[] {
   return values;
 }
 
+const protocol = "recruitment-kernel-v3";
+const resultProtocol = "recruitment-kernel-result-v3";
+
 function fieldValues(fields: RequisitionFields): string[] {
   return [
     fields.role,
@@ -75,6 +83,15 @@ function auditValues(entry: AuditEntry): string[] {
   ];
 }
 
+function schemaValues(questions: readonly AdvertQuestion[], skills: readonly AdvertSkill[]): string[] {
+  return [
+    String(questions.length),
+    ...questions.flatMap((q) => [String(q.questionId), q.prompt, q.expected]),
+    String(skills.length),
+    ...skills.flatMap((s) => [String(s.skillId), s.keyword, String(s.weight), String(s.targetYears)])
+  ];
+}
+
 function caseValues(row: WorkflowCase): string[] {
   return [
     String(row.reference),
@@ -83,7 +100,8 @@ function caseValues(row: WorkflowCase): string[] {
     String(row.revision),
     ...fieldValues(row),
     String(row.history.length),
-    ...row.history.flatMap(auditValues)
+    ...row.history.flatMap(auditValues),
+    ...schemaValues(row.advert?.questions ?? [], row.advert?.skills ?? [])
   ];
 }
 
@@ -92,6 +110,7 @@ function commandValues(command: WorkflowCommand): string[] {
     case "create-draft":
       return [String(command.reference), command.actor, String(command.tick), ...fieldValues(command.fields)];
     case "update-draft":
+    case "resubmit":
       return [
         String(command.reference),
         String(command.generation),
@@ -115,13 +134,13 @@ function commandValues(command: WorkflowCommand): string[] {
         command.decision,
         command.reason
       ];
-    case "resubmit":
+    case "publish":
       return [
         String(command.reference),
         String(command.generation),
         command.actor,
         String(command.tick),
-        ...fieldValues(command.fields)
+        ...schemaValues(command.questions, command.skills)
       ];
   }
 }
@@ -129,12 +148,31 @@ function commandValues(command: WorkflowCommand): string[] {
 export function encodeTransition(current: WorkflowCase | null, command: WorkflowCommand): string {
   const args = commandValues(command);
   return encodeFrames([
-    "recruitment-workflow-transition-v2",
+    protocol,
+    "transition",
     current === null ? "none" : "some",
     ...(current === null ? [] : caseValues(current)),
     command.kind,
     String(args.length),
     ...args
+  ]);
+}
+
+export function encodeIntake(advertised: WorkflowCase, request: IntakeRequest): string {
+  return encodeFrames([
+    protocol,
+    "intake",
+    ...caseValues(advertised),
+    String(request.applicationId),
+    request.actor,
+    String(request.tick),
+    request.cv.locator,
+    request.cv.version,
+    request.cv.text,
+    String(request.answers.length),
+    ...request.answers.flatMap(({ questionId, answer }) => [String(questionId), answer]),
+    String(request.years.length),
+    ...request.years.flatMap(({ skillId, years }) => [String(skillId), String(years)])
   ]);
 }
 
@@ -178,13 +216,20 @@ function readAudit(reader: FieldReader): AuditEntry {
   };
 }
 
+const stages: readonly RequisitionStage[] = [
+  "draft",
+  "awaiting-review",
+  "approved",
+  "needs-rework",
+  "declined",
+  "advertising"
+];
+
 function readCase(reader: FieldReader): WorkflowCase {
   const reference = reader.number();
   const generation = reader.number();
-  const stage = reader.read() as WorkflowCase["stage"];
-  if (!["draft", "awaiting-review", "approved", "needs-rework", "declined"].includes(stage)) {
-    throw new WorkflowError("invalid-worker-response");
-  }
+  const stage = reader.read() as RequisitionStage;
+  if (!stages.includes(stage)) throw new WorkflowError("invalid-worker-response");
   const revision = reader.number();
   const role = reader.read();
   const department = reader.read();
@@ -193,6 +238,21 @@ function readCase(reader: FieldReader): WorkflowCase {
   const justification = reader.read();
   const auditCount = reader.number();
   const history = Array.from({ length: auditCount }, () => readAudit(reader));
+  const questions = Array.from({ length: reader.number() }, () => ({
+    questionId: reader.number(),
+    prompt: reader.read(),
+    expected: reader.read()
+  }));
+  const skills = Array.from({ length: reader.number() }, () => ({
+    skillId: reader.number(),
+    keyword: reader.read(),
+    weight: reader.number(),
+    targetYears: reader.number()
+  }));
+  const advert = stage === "advertising" ? { questions, skills } : null;
+  if (advert === null && (questions.length > 0 || skills.length > 0)) {
+    throw new WorkflowError("invalid-worker-response");
+  }
   return {
     reference,
     generation,
@@ -203,21 +263,42 @@ function readCase(reader: FieldReader): WorkflowCase {
     headcount,
     budgetMinor,
     justification,
-    history
+    history,
+    advert
   };
 }
 
-function decodeResult(output: string): WorkflowResult {
+function readReceipt(reader: FieldReader): ScoreReceipt {
+  return {
+    applicationId: reader.number(),
+    breakdown: {
+      keywords: reader.number(),
+      experience: reader.number(),
+      screening: reader.number(),
+      completeness: reader.number()
+    },
+    total: reader.number(),
+    policyVersion: reader.read(),
+    evidence: {
+      event: "application-scored",
+      actor: reader.read(),
+      tick: reader.number(),
+      reference: reader.number(),
+      revision: reader.number(),
+      detail: reader.read()
+    }
+  };
+}
+
+function decodeResult<T>(output: string, kind: string, read: (reader: FieldReader) => T): T {
   const reader = new FieldReader(decodeFrames(output));
-  if (reader.read() !== "recruitment-workflow-transition-result-v2") {
-    throw new WorkflowError("invalid-worker-response");
-  }
+  if (reader.read() !== resultProtocol) throw new WorkflowError("invalid-worker-response");
   const status = reader.read();
   if (status === "error") throw new WorkflowError(reader.read());
-  if (status !== "ok") throw new WorkflowError("invalid-worker-response");
-  const result = readCase(reader);
+  if (status !== kind) throw new WorkflowError("invalid-worker-response");
+  const result = read(reader);
   if (!reader.complete) throw new WorkflowError("invalid-worker-response");
-  return { result };
+  return result;
 }
 
 export class WorkflowClient {
@@ -228,19 +309,28 @@ export class WorkflowClient {
   }
 
   async evaluate(current: WorkflowCase | null, command: WorkflowCommand): Promise<WorkflowResult> {
+    const output = await this.call(encodeTransition(current, command));
+    return { result: decodeResult(output, "case", readCase) };
+  }
+
+  async intake(advertised: WorkflowCase, request: IntakeRequest): Promise<ScoreReceipt> {
+    const output = await this.call(encodeIntake(advertised, request));
+    return decodeResult(output, "receipt", readReceipt);
+  }
+
+  private async call(input: string): Promise<string> {
     const directory = await mkdtemp(join(tmpdir(), "recruitment-workflow-"));
-    const inputPath = join(directory, "transition.frames");
+    const inputPath = join(directory, "request.frames");
     try {
-      await writeFile(inputPath, encodeTransition(current, command), { encoding: "utf8", mode: 0o600 });
+      await writeFile(inputPath, input, { encoding: "utf8", mode: 0o600 });
       const { stdout } = await execFileAsync(this.executable, [inputPath], {
         cwd: process.cwd(),
         encoding: "utf8",
         maxBuffer: 8 * 1024 * 1024,
         timeout: 10_000
       });
-      return decodeResult(stdout);
+      return stdout;
     } catch (error) {
-      if (error instanceof WorkflowError) throw error;
       const message = error instanceof Error ? error.message : "workflow-process-failed";
       throw new WorkflowError(`workflow-process-failed:${message}`);
     } finally {

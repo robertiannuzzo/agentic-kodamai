@@ -8,12 +8,15 @@ import type {
 import {
   createDraft,
   listRequisitions,
+  publishAdvert,
   resubmitRequisition,
   reviewRequisition,
   submitDraft,
   updateDraft,
   type DemoIdentity
 } from "./api";
+import { CandidateWorkspace } from "./candidate";
+import { AdvertPanel, ApplicationsPanel, PublishAdvertForm } from "./recruiting";
 
 const emptyFields: RequisitionFields = {
   role: "",
@@ -28,15 +31,42 @@ const stageLabels: Record<RequisitionCase["stage"], string> = {
   "awaiting-review": "Awaiting review",
   approved: "Approved",
   "needs-rework": "Changes requested",
-  declined: "Declined"
+  declined: "Declined",
+  advertising: "Advertising"
 };
 
 const errorMessages: Record<string, string> = {
   "stale-version": "This requisition changed. Reload and try again.",
   "self-review-forbidden": "You submitted this requisition, so someone else must review it.",
   "reason-required": "Give a reason when declining or requesting changes.",
-  "wrong-stage": "That action is not available at this stage."
+  "wrong-stage": "That action is not available at this stage.",
+  "already-applied": "You have already applied for this role.",
+  "consent-required": "Please confirm consent before applying.",
+  "answers-do-not-match-questions": "Answer every screening question.",
+  "experience-does-not-match-skills": "Give your years of experience for every skill."
 };
+
+function describeError(code: string): string {
+  return errorMessages[code] ?? code;
+}
+
+const roles: ReadonlyArray<{ role: DemoRole; label: string }> = [
+  { role: "requester", label: "Requester" },
+  { role: "approver", label: "Approver" },
+  { role: "recruiter", label: "Recruiter" },
+  { role: "candidate", label: "Candidate" }
+];
+
+const defaultCandidate = "candidate@example.test";
+
+/** The staff queue each role works from first. */
+function queueFor(role: DemoRole, actor: string, rows: RequisitionCase[]): RequisitionCase[] {
+  if (role === "approver") {
+    return rows.filter((row) => row.stage === "awaiting-review" && row.requesterId !== actor);
+  }
+  if (role === "recruiter") return rows.filter((row) => row.stage === "approved");
+  return [];
+}
 
 type DisplayCurrency = "GBP" | "USD";
 
@@ -245,13 +275,14 @@ export function App() {
       // Storage can be unavailable; the choice still applies for this session.
     }
   }
+  const [candidateEmail, setCandidateEmail] = useState(defaultCandidate);
   const identity = useMemo<DemoIdentity>(
     () => ({
       role,
-      actor: role === "requester" ? "requester@kodamai.test" : "approver@kodamai.test",
+      actor: role === "candidate" ? candidateEmail : `${role}@kodamai.test`,
       tenantId: "demo"
     }),
-    [role]
+    [role, candidateEmail]
   );
   const [rows, setRows] = useState<RequisitionCase[]>([]);
   const [selectedReference, setSelectedReference] = useState<number | null>(null);
@@ -261,21 +292,26 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   const selected = rows.find(({ reference }) => reference === selectedReference) ?? null;
-  const inbox =
-    role === "approver"
-      ? rows.filter((row) => row.stage === "awaiting-review" && row.requesterId !== identity.actor)
-      : [];
+  const inbox = queueFor(role, identity.actor, rows);
   const others = rows.filter((row) => !inbox.includes(row));
+  const queueTitle = role === "approver" ? "Awaiting your review" : "Ready to advertise";
+  const queueEmpty =
+    role === "approver"
+      ? "Nothing is waiting for your review."
+      : "No approved requisitions are waiting for an advert.";
 
   const load = useCallback(async () => {
+    if (identity.role === "candidate") {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const result = await listRequisitions(identity);
       setRows(result);
-      const waiting = result.find(
-        (row) => identity.role === "approver" && row.stage === "awaiting-review" && row.requesterId !== identity.actor
-      );
+      const waiting = queueFor(identity.role, identity.actor, result)[0];
       setSelectedReference((current) =>
         result.some(({ reference }) => reference === current)
           ? current
@@ -303,7 +339,7 @@ export function App() {
       accept(await operation());
     } catch (failure) {
       const message = failure instanceof Error ? failure.message : "Action failed";
-      setError(errorMessages[message] ?? message);
+      setError(describeError(message));
     } finally {
       setBusy(false);
     }
@@ -341,200 +377,239 @@ export function App() {
           </div>
         </div>
         <div className="topbar-controls">
-          <div className="role-switch" role="group" aria-label="Display currency">
-            <span>Currency</span>
-            {(["GBP", "USD"] as const).map((option) => (
+          {role === "candidate" ? null : (
+            <div className="role-switch" role="group" aria-label="Display currency">
+              <span>Currency</span>
+              {(["GBP", "USD"] as const).map((option) => (
+                <button
+                  aria-pressed={currency === option}
+                  className={currency === option ? "active" : ""}
+                  key={option}
+                  onClick={() => chooseCurrency(option)}
+                >
+                  {option === "GBP" ? "£ GBP" : "$ USD"}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="role-switch" aria-label="Demo role">
+            <span>Viewing as</span>
+            {roles.map((option) => (
               <button
-                aria-pressed={currency === option}
-                className={currency === option ? "active" : ""}
-                key={option}
-                onClick={() => chooseCurrency(option)}
+                className={role === option.role ? "active" : ""}
+                key={option.role}
+                onClick={() => {
+                  setRole(option.role);
+                  setCreating(false);
+                }}
               >
-                {option === "GBP" ? "£ GBP" : "$ USD"}
+                {option.label}
               </button>
             ))}
           </div>
-          <div className="role-switch" aria-label="Demo role">
-            <span>Viewing as</span>
-            <button className={role === "requester" ? "active" : ""} onClick={() => setRole("requester")}>
-              Requester
-            </button>
-            <button className={role === "approver" ? "active" : ""} onClick={() => setRole("approver")}>
-              Approver
-            </button>
-          </div>
+          {role === "candidate" ? (
+            <label className="candidate-identity">
+              <span>Applying as</span>
+              <input
+                aria-label="Candidate email"
+                defaultValue={candidateEmail}
+                type="email"
+                onBlur={(event) => setCandidateEmail(event.target.value.trim() || defaultCandidate)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                }}
+              />
+            </label>
+          ) : null}
         </div>
       </header>
 
-      <div className="workspace">
-        <aside className="sidebar">
-          <div className="sidebar-heading">
-            <div>
-              <p className="eyebrow">Hiring</p>
-              <h1>Requisitions</h1>
-            </div>
-            {role === "requester" ? (
-              <button className="new-button" onClick={() => setCreating(true)} aria-label="New requisition">
-                +
-              </button>
-            ) : null}
-          </div>
-          {loading ? <p className="empty">Loading…</p> : null}
-          {!loading && rows.length === 0 ? <p className="empty">No requisitions yet.</p> : null}
-          {role === "approver" && !loading ? (
-            <>
-              <h2 className="list-heading">
-                Awaiting your review <span className="count">{inbox.length}</span>
-              </h2>
-              {inbox.length === 0 ? <p className="empty compact">Nothing is waiting for your review.</p> : null}
-              <nav className="requisition-list" aria-label="Awaiting your review">
-                {inbox.map(renderRow)}
-              </nav>
-              {others.length > 0 ? <h2 className="list-heading">All requisitions</h2> : null}
-            </>
-          ) : null}
-          <nav className="requisition-list" aria-label={role === "approver" ? "All requisitions" : "Your requisitions"}>
-            {others.map(renderRow)}
-          </nav>
-        </aside>
-
-        <main className="main-panel">
-          {error === null ? null : (
-            <div className="error-banner" role="alert">
-              <span>{error}</span>
-              <button onClick={() => void load()}>Reload</button>
-            </div>
-          )}
-
-          {creating ? (
-            <section className="content-card">
-              <p className="eyebrow">New requisition</p>
-              <h1>Create a hiring request</h1>
-              <p className="lede">Save a draft now. Submission creates the evidence required for review.</p>
-              <FieldForm
-                action="Save draft"
-                busy={busy}
-                currency={currency}
-                initial={emptyFields}
-                onCancel={() => setCreating(false)}
-                onSubmit={(value) => perform(() => createDraft(identity, value))}
-              />
-            </section>
-          ) : selected === null ? (
-            <section className="welcome">
-              <p className="eyebrow">Typed recruitment</p>
-              <h1>Begin with a requisition</h1>
-              <p>Create a draft, submit it for review, and watch every transition retain its evidence.</p>
+      {role === "candidate" ? (
+        <CandidateWorkspace identity={identity} describeError={describeError} />
+      ) : (
+        <div className="workspace">
+          <aside className="sidebar">
+            <div className="sidebar-heading">
+              <div>
+                <p className="eyebrow">Hiring</p>
+                <h1>Requisitions</h1>
+              </div>
               {role === "requester" ? (
-                <button className="primary" onClick={() => setCreating(true)}>
-                  Create first requisition
+                <button className="new-button" onClick={() => setCreating(true)} aria-label="New requisition">
+                  +
                 </button>
-              ) : (
-                <p>Switch to Requester to create the first requisition.</p>
-              )}
-            </section>
-          ) : (
-            <>
-              <section className="content-card requisition-header">
-                <div className="title-row">
-                  <div>
-                    <p className="eyebrow">REQ-{String(selected.reference).padStart(4, "0")}</p>
-                    <h1>{selected.role}</h1>
-                  </div>
-                  <span className={`status-badge ${selected.stage}`}>{stageLabels[selected.stage]}</span>
-                </div>
-                <div className="facts">
-                  <div>
-                    <span>Department</span>
-                    <strong>{selected.department}</strong>
-                  </div>
-                  <div>
-                    <span>Headcount</span>
-                    <strong>{selected.headcount}</strong>
-                  </div>
-                  <div>
-                    <span>Budget</span>
-                    <strong>{formatMoney(selected.budgetMinor, currency)}</strong>
-                    {currency === "USD" ? (
-                      <small>Stored as {formatMoney(selected.budgetMinor)}</small>
-                    ) : null}
-                  </div>
-                  <div>
-                    <span>Revision</span>
-                    <strong>{selected.revision}</strong>
-                  </div>
-                </div>
-                <div className="justification">
-                  <span>Business justification</span>
-                  <p>{selected.justification}</p>
-                </div>
-              </section>
-
-              {role === "requester" && selected.stage === "draft" ? (
-                <section className="content-card">
-                  <div className="section-heading">
-                    <div>
-                      <p className="eyebrow">Draft</p>
-                      <h2>Edit before submission</h2>
-                    </div>
-                  </div>
-                  <FieldForm
-                    action="Save changes"
-                    busy={busy}
-                    currency={currency}
-                    initial={selected}
-                    onSubmit={(value) => perform(() => updateDraft(identity, selected, value))}
-                  />
-                  <hr />
-                  <div className="submit-row">
-                    <div>
-                      <strong>Ready for review?</strong>
-                      <p>Submission freezes revision 0 and creates mandatory audit evidence.</p>
-                    </div>
-                    <button className="primary" disabled={busy} onClick={() => void perform(() => submitDraft(identity, selected))}>
-                      Submit requisition
-                    </button>
-                  </div>
-                </section>
               ) : null}
+            </div>
+            {loading ? <p className="empty">Loading…</p> : null}
+            {!loading && rows.length === 0 ? <p className="empty">No requisitions yet.</p> : null}
+            {role !== "requester" && !loading ? (
+              <>
+                <h2 className="list-heading">
+                  {queueTitle} <span className="count">{inbox.length}</span>
+                </h2>
+                {inbox.length === 0 ? <p className="empty compact">{queueEmpty}</p> : null}
+                <nav className="requisition-list" aria-label={queueTitle}>
+                  {inbox.map(renderRow)}
+                </nav>
+                {others.length > 0 ? <h2 className="list-heading">All requisitions</h2> : null}
+              </>
+            ) : null}
+            <nav className="requisition-list" aria-label={role === "requester" ? "Your requisitions" : "All requisitions"}>
+              {others.map(renderRow)}
+            </nav>
+          </aside>
 
-              {role === "requester" && selected.stage === "needs-rework" ? (
-                <section className="content-card">
-                  <p className="eyebrow">Revision {selected.revision + 1}</p>
-                  <h2>Respond to requested changes</h2>
-                  <FieldForm
-                    action="Revise and resubmit"
-                    busy={busy}
-                    currency={currency}
-                    initial={selected}
-                    onSubmit={(value) => perform(() => resubmitRequisition(identity, selected, value))}
-                  />
-                </section>
-              ) : null}
+          <main className="main-panel">
+            {error === null ? null : (
+              <div className="error-banner" role="alert">
+                <span>{error}</span>
+                <button onClick={() => void load()}>Reload</button>
+              </div>
+            )}
 
-              {role === "approver" &&
-              selected.stage === "awaiting-review" &&
-              selected.requesterId === identity.actor ? (
-                <section className="review-panel">
-                  <p className="eyebrow">Separation of duties</p>
-                  <p>You submitted this requisition, so another approver must review it.</p>
-                </section>
-              ) : null}
-
-              {role === "approver" &&
-              selected.stage === "awaiting-review" &&
-              selected.requesterId !== identity.actor ? (
-                <ReviewPanel
+            {creating ? (
+              <section className="content-card">
+                <p className="eyebrow">New requisition</p>
+                <h1>Create a hiring request</h1>
+                <p className="lede">Save a draft now. Submission creates the evidence required for review.</p>
+                <FieldForm
+                  action="Save draft"
                   busy={busy}
-                  onReview={(decision, reason) => perform(() => reviewRequisition(identity, selected, decision, reason))}
+                  currency={currency}
+                  initial={emptyFields}
+                  onCancel={() => setCreating(false)}
+                  onSubmit={(value) => perform(() => createDraft(identity, value))}
                 />
-              ) : null}
+              </section>
+            ) : selected === null ? (
+              <section className="welcome">
+                <p className="eyebrow">Typed recruitment</p>
+                <h1>Begin with a requisition</h1>
+                <p>Create a draft, submit it for review, and watch every transition retain its evidence.</p>
+                {role === "requester" ? (
+                  <button className="primary" onClick={() => setCreating(true)}>
+                    Create first requisition
+                  </button>
+                ) : (
+                  <p>Switch to Requester to create the first requisition.</p>
+                )}
+              </section>
+            ) : (
+              <>
+                <section className="content-card requisition-header">
+                  <div className="title-row">
+                    <div>
+                      <p className="eyebrow">REQ-{String(selected.reference).padStart(4, "0")}</p>
+                      <h1>{selected.role}</h1>
+                    </div>
+                    <span className={`status-badge ${selected.stage}`}>{stageLabels[selected.stage]}</span>
+                  </div>
+                  <div className="facts">
+                    <div>
+                      <span>Department</span>
+                      <strong>{selected.department}</strong>
+                    </div>
+                    <div>
+                      <span>Headcount</span>
+                      <strong>{selected.headcount}</strong>
+                    </div>
+                    <div>
+                      <span>Budget</span>
+                      <strong>{formatMoney(selected.budgetMinor, currency)}</strong>
+                      {currency === "USD" ? (
+                        <small>Stored as {formatMoney(selected.budgetMinor)}</small>
+                      ) : null}
+                    </div>
+                    <div>
+                      <span>Revision</span>
+                      <strong>{selected.revision}</strong>
+                    </div>
+                  </div>
+                  <div className="justification">
+                    <span>Business justification</span>
+                    <p>{selected.justification}</p>
+                  </div>
+                </section>
 
-              <AuditTimeline row={selected} />
-            </>
-          )}
-        </main>
-      </div>
+                {role === "requester" && selected.stage === "draft" ? (
+                  <section className="content-card">
+                    <div className="section-heading">
+                      <div>
+                        <p className="eyebrow">Draft</p>
+                        <h2>Edit before submission</h2>
+                      </div>
+                    </div>
+                    <FieldForm
+                      action="Save changes"
+                      busy={busy}
+                      currency={currency}
+                      initial={selected}
+                      onSubmit={(value) => perform(() => updateDraft(identity, selected, value))}
+                    />
+                    <hr />
+                    <div className="submit-row">
+                      <div>
+                        <strong>Ready for review?</strong>
+                        <p>Submission freezes revision 0 and creates mandatory audit evidence.</p>
+                      </div>
+                      <button className="primary" disabled={busy} onClick={() => void perform(() => submitDraft(identity, selected))}>
+                        Submit requisition
+                      </button>
+                    </div>
+                  </section>
+                ) : null}
+
+                {role === "requester" && selected.stage === "needs-rework" ? (
+                  <section className="content-card">
+                    <p className="eyebrow">Revision {selected.revision + 1}</p>
+                    <h2>Respond to requested changes</h2>
+                    <FieldForm
+                      action="Revise and resubmit"
+                      busy={busy}
+                      currency={currency}
+                      initial={selected}
+                      onSubmit={(value) => perform(() => resubmitRequisition(identity, selected, value))}
+                    />
+                  </section>
+                ) : null}
+
+                {role === "approver" &&
+                selected.stage === "awaiting-review" &&
+                selected.requesterId === identity.actor ? (
+                  <section className="review-panel">
+                    <p className="eyebrow">Separation of duties</p>
+                    <p>You submitted this requisition, so another approver must review it.</p>
+                  </section>
+                ) : null}
+
+                {role === "approver" &&
+                selected.stage === "awaiting-review" &&
+                selected.requesterId !== identity.actor ? (
+                  <ReviewPanel
+                    busy={busy}
+                    onReview={(decision, reason) => perform(() => reviewRequisition(identity, selected, decision, reason))}
+                  />
+                ) : null}
+
+                {role === "recruiter" && selected.stage === "approved" ? (
+                  <PublishAdvertForm
+                    busy={busy}
+                    onPublish={(advert) => perform(() => publishAdvert(identity, selected, advert))}
+                  />
+                ) : null}
+
+                {selected.advert === null ? null : <AdvertPanel advert={selected.advert} />}
+
+                {role === "recruiter" && selected.stage === "advertising" ? (
+                  <ApplicationsPanel identity={identity} reference={selected.reference} />
+                ) : null}
+
+                <AuditTimeline row={selected} />
+              </>
+            )}
+          </main>
+        </div>
+      )}
     </div>
   );
 }

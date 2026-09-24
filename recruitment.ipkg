@@ -17,6 +17,7 @@ modules = Recruitment.Container,
           Recruitment.Application.Workflow,
           Recruitment.Adapters.Cases,
           Recruitment.Adapters.Transition,
+          Recruitment.Adapters.Kernel,
           Recruitment.Adapters.Codec,
           Recruitment.Example
 opts = "--total -Werror"

@@ -59,6 +59,16 @@ WorkerC = Sum RefuseC (Sum CreateC (Sum UpdateC (Sum SubmitC (Sum ReviewC Resubm
 
 Exactly one command is asked per write, so the worker interface is a sum and `workerAgent` is built with `sumAgent`. `dispatch : Handler TransitionC WorkerC` delegates a `(Maybe CaseRecord, Command)` prompt to its branch (or to `RefuseC` when no aggregate exists, or one exists for a create), and its amalgamation is checked per branch against the high-level reply `Next (target command) (after command)`. `transitionAgent = compose dispatch workerAgent` is what `WorkflowMain` runs for every HTTP mutation. The `Next` evidence is manufactured by a decidable check (`decEq`), which is the design note's Q2 cost made concrete; `WrongAggregate` shows that returning the loaded row unchanged does not compile.
 
+## The kernel and the intake chain
+
+Slice 2 makes the whole Idris executable one container, `KernelC = Sum TransitionC IntakeC`, answered by `kernelAgent leaf = sumAgent transitionAgent (intakeAgent leaf)`. `TransitionC` gains `PublishC` as its sixth branch. `IntakeC`'s reply is `Receipt a` for the advert in the prompt, and it is implemented by a handler into a chain built from the spine's own links:
+
+```idris
+IntakeChain = Seq ValidateC (Sum StopC (Seq ExtractionC (Sum StopC ApplicationTail)))
+```
+
+`intakeChainAgent` reuses `applicationAgent` and `scoreAgent`, and takes the extraction leaf as a parameter, so the model sits exactly where the papers put it. See [the Slice 2 design](slice-2.md) and ADR 010.
+
 ## Hire: the missing morphism
 
 `HireC` is the stage-2 link from the design note, section 4:

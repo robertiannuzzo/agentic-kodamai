@@ -4,14 +4,17 @@
 
 One application, a small mathematical-container module, a pure domain core, application services and deterministic adapters. The preparation documents motivate prompt-dependent replies and composable handlers. The implemented container algebra is described in [the walkthrough](containers.md).
 
-Slice 1 introduces a React interface and TypeScript HTTP boundary for requisitions and approvals. Protected writes cross a versioned process boundary into the compiled Idris workflow executable. Slice 1.1 makes transactional SQLite state authoritative, retains append-only audit facts, and asks Idris to check and transition one aggregate per write. See [the Slice 1 design](slice-1.md).
+Slice 1 introduces a React interface and TypeScript HTTP boundary for requisitions and approvals. Protected writes cross a versioned process boundary into the compiled Idris workflow executable. Slice 1.1 makes transactional SQLite state authoritative, retains append-only audit facts, and asks Idris to check and transition one aggregate per write. See [the Slice 1 design](slice-1.md). Slice 2 adds recruiter publication, candidate applications and scored review through one kernel container; see [the Slice 2 design](slice-2.md).
 
 ```mermaid
 flowchart LR
   Web[React requester / approver UI] --> API[TypeScript HTTP boundary]
   API --> Worker[Idris workflow executable]
-  Worker --> Transition[TransitionC dispatch handler + Sum of command agents]
+  Worker --> Kernel[kernelAgent: TransitionC + IntakeC]
+  Kernel --> Transition[TransitionC dispatch handler + Sum of command agents]
+  Kernel --> IntakeChain[IntakeC handler: validate, extract leaf, application, score]
   Transition --> Workflow[Workflow use cases]
+  IntakeChain --> Core
   API --> SQLite[(SQLite state + audit + idempotency)]
   CLI[CLI demonstration] --> Spine[Composed container spine]
   Spine --> Core[Pure typed domain core]
@@ -87,7 +90,7 @@ The demo gives `5 + 18 + 20 + 3 = 46`. Policy identity is `recruitment-score-v1`
 
 `Adapters.Codec` encodes only `RawApplication`, using a versioned sequence of length-prefixed fields. UTF-8 is the transport encoding; lengths count Unicode characters, not bytes. Delimiters and newlines inside values round-trip. The decoder requires canonical decimal numbers, rejects trailing data/unknown versions, and limits the full message to 100,000 characters and numbers to 20 digits. The encoder rejects values outside the same limits rather than generating undecodable output.
 
-Decoding yields untrusted input, not `Approved`, `Advert`, `Application`, or `Score`. Intake must validate it against the actual loaded advert. Requisition witnesses are reconstructed by replaying their audit trail (ADR 008); advert, application and score persistence is not implemented yet, and loading an integer ID is insufficient to establish advert equality. A production adapter will need a schema/version registry, checked reconstruction, and an existential package retaining the exact advert with its dependent applications and receipts.
+Decoding yields untrusted input, not `Approved`, `Advert`, `Application`, or `Score`. Intake must validate it against the actual loaded advert. Requisition witnesses are reconstructed by replaying their audit trail (ADR 008). A published advert is reconstructed by replaying to `Approved r` and re-running `publish` on the stored schema, which must reproduce the fingerprinted publication fact (ADR 010); loading an integer ID is never sufficient to establish advert equality. Applications and scores are stored as write-once receipts and read back as data, not as typed values. A production adapter will need a schema/version registry, checked reconstruction, and an existential package retaining the exact advert with its dependent applications and receipts.
 
 ## Error vocabulary
 
