@@ -15,13 +15,15 @@
     "test": "npm run test:core && npm run test:integration",
     "test:core": "python3 scripts/test.py",
     "test:integration": "npm run build:workflow && tsc -p apps/api/tsconfig.test.json && node --test build/api-test/apps/api/src/*.test.js",
-    "start": "node build/api/apps/api/src/main.js"
+    "start": "node build/api/apps/api/src/main.js",
+    "test:e2e": "npm run build && playwright test"
   },
   "dependencies": {
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.18.6",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",

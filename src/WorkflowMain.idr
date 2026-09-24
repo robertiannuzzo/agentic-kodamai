@@ -2,17 +2,11 @@ module WorkflowMain
 
 import Data.List
 import Data.String
-import Recruitment.Adapters.Cases
+import Recruitment.Adapters.Transition
 import System
+import System.File
 
 %default total
-
-data Command
-  = CreateDraft Context Fields
-  | UpdateDraft Nat Nat Context Fields
-  | SubmitDraft Nat Nat Context
-  | Review Nat Nat Context Decision
-  | Resubmit Nat Nat Context Fields
 
 frame : String -> String
 frame value = show (length (unpack value)) ++ ":" ++ value ++ ","
@@ -68,10 +62,12 @@ fields role department count budget justification = do
   Right result
 
 command : String -> List String -> Either DomainError Command
-command "create-draft" [actor, tick, role, department, count, budget, justification] = do
+command "create-draft" [ref, actor, tick, role, department, count, budget, justification] = do
+  reference <- natural ref
+  if reference == 0 then Left InvalidReference else Right ()
   c <- context actor tick
   f <- fields role department count budget justification
-  Right (CreateDraft c f)
+  Right (CreateDraft reference c f)
 command "update-draft" [ref, generation, actor, tick, role, department, count, budget,
                         justification] = do
   reference <- natural ref
@@ -103,45 +99,36 @@ command "resubmit" [ref, generation, actor, tick, role, department, count, budge
   Right (Resubmit reference expected c f)
 command _ _ = Left InvalidEncoding
 
-commands : Nat -> List String -> Either DomainError (List Command, List String)
-commands Z rest = Right ([], rest)
-commands (S count) (kind :: argc :: rest) = do
-  size <- natural argc
-  (args, tail) <- takeArgs size rest
-  current <- command kind args
-  (remaining, suffix) <- commands count tail
-  Right (current :: remaining, suffix)
-commands _ _ = Left InvalidEncoding
-
-decodeCommands : String -> Either DomainError (List Command)
-decodeCommands input = do
-  if length (unpack input) > 1000000 then Left InvalidEncoding else Right ()
-  values <- frames (length (unpack input)) (unpack input)
-  case values of
-    "recruitment-workflow-command-log-v1" :: count :: rest => do
-      size <- natural count
-      (result, suffix) <- commands size rest
-      if null suffix then Right result else Left InvalidEncoding
+auditRow : List String -> Either DomainError (AuditRow, List String)
+auditRow (name :: actor :: tick :: ref :: rev :: detail :: rest) = do
+  c <- context actor tick
+  reference <- natural ref
+  revision <- natural rev
+  row <- case name of
+    "draft-created" => Right (DraftCreated ** MkEvidence c reference revision detail)
+    "draft-updated" => Right (DraftUpdated ** MkEvidence c reference revision detail)
+    "submitted" => Right (Submitted ** MkEvidence c reference revision detail)
+    "approved" => Right (ApprovedEvent ** MkEvidence c reference revision detail)
+    "declined" => Right (DeclinedEvent ** MkEvidence c reference revision detail)
+    "held" => Right (HeldEvent ** MkEvidence c reference revision detail)
+    "revised" => Right (Revised ** MkEvidence c reference revision detail)
+    "advert-created" => Right (AdvertCreated ** MkEvidence c reference revision detail)
+    "application-scored" => Right (ApplicationScored ** MkEvidence c reference revision detail)
     _ => Left InvalidEncoding
+  Right (row, rest)
+auditRow _ = Left InvalidEncoding
 
-apply : Command -> CaseMemory -> Either DomainError (CaseRecord, CaseMemory)
-apply (CreateDraft c f) state = createDraft caseRepository c f state
-apply (UpdateDraft ref generation c f) state =
-  updateDraft caseRepository ref generation c f state
-apply (SubmitDraft ref generation c) state =
-  submitDraft caseRepository ref generation c state
-apply (Review ref generation c decision) state =
-  review caseRepository ref generation c decision state
-apply (Resubmit ref generation c f) state =
-  resubmit caseRepository ref generation c f state
+auditRows : Nat -> List String -> Either DomainError (List AuditRow, List String)
+auditRows Z rest = Right ([], rest)
+auditRows (S count) values = do
+  (row, rest) <- auditRow values
+  (rows, suffix) <- auditRows count rest
+  Right (row :: rows, suffix)
 
-replay : List Command -> CaseMemory -> Either DomainError (Maybe CaseRecord, CaseMemory)
-replay [] state = Right (Nothing, state)
-replay (current :: remaining) state = do
-  (row, updated) <- apply current state
-  case remaining of
-    [] => Right (Just row, updated)
-    _ => replay remaining updated
+validReferences : Nat -> List AuditRow -> Bool
+validReferences _ [] = True
+validReferences ref ((_ ** evidence) :: rest) =
+  evidence.reference == ref && validReferences ref rest
 
 record StageView where
   constructor MkStageView
@@ -157,6 +144,49 @@ stageView (NeedsRework req _) = MkStageView "needs-rework" req.revision req.fiel
 stageView (Rejected req _) = MkStageView "declined" req.revision req.fields
 stageView (Advertising advert) =
   let req = requisitionOf advert in MkStageView "advertising" req.revision req.fields
+
+caseRecord : List String -> Either DomainError (CaseRecord, List String)
+caseRecord (ref :: generation :: stageName :: revision :: role :: department :: count :: budget ::
+            justification :: auditCount :: rest) = do
+  reference <- natural ref
+  if reference == 0 then Left InvalidReference else Right ()
+  currentGeneration <- natural generation
+  currentRevision <- natural revision
+  values <- fields role department count budget justification
+  historyCount <- natural auditCount
+  (history, suffix) <- auditRows historyCount rest
+  if validReferences reference history then Right () else Left InvalidEncoding
+  -- The stored stage label and revision are only claims; replay decides.
+  currentStage <- restoreStage reference values history
+  let view = stageView currentStage
+  if view.name == stageName && view.revision == currentRevision
+    then Right (MkCaseRecord reference currentGeneration currentStage history, suffix)
+    else Left InvalidHistory
+caseRecord _ = Left InvalidEncoding
+
+current : String -> List String -> Either DomainError (Maybe CaseRecord, List String)
+current "none" rest = Right (Nothing, rest)
+current "some" values = do
+  (row, rest) <- caseRecord values
+  Right (Just row, rest)
+current _ _ = Left InvalidEncoding
+
+decodeTransition : String -> Either DomainError (Maybe CaseRecord, Command)
+decodeTransition input = do
+  if length (unpack input) > 8000000 then Left InvalidEncoding else Right ()
+  values <- frames (length (unpack input)) (unpack input)
+  case values of
+    "recruitment-workflow-transition-v2" :: presence :: rest => do
+      (stored, commandValues) <- current presence rest
+      case commandValues of
+        kind :: argc :: args => do
+          size <- natural argc
+          (selected, suffix) <- takeArgs size args
+          if null suffix then Right () else Left InvalidEncoding
+          proposed <- command kind selected
+          Right (stored, proposed)
+        _ => Left InvalidEncoding
+    _ => Left InvalidEncoding
 
 evidenceFields : AuditRow -> List String
 evidenceFields (event ** value) =
@@ -183,29 +213,31 @@ caseFields row =
   , show (length row.history)
   ] ++ concatMap evidenceFields row.history
 
-success : Maybe CaseRecord -> CaseMemory -> String
-success latest state = encodeFields
-  ([ "recruitment-workflow-result-v1"
-   , "ok"
-   , maybe "" (show . reference) latest
-   , show (length (caseRows state))
-   ] ++ concatMap caseFields (caseRows state))
+success : CaseRecord -> String
+success row = encodeFields (["recruitment-workflow-transition-result-v2", "ok"] ++ caseFields row)
 
 failure : DomainError -> String
-failure err = encodeFields ["recruitment-workflow-result-v1", "error", show err]
+failure err = encodeFields ["recruitment-workflow-transition-result-v2", "error", show err]
 
-run : String -> String
-run input = case decodeCommands input of
+respond : String -> String
+respond input = case decodeTransition input of
   Left err => failure err
-  Right values => case replay values emptyCases of
+  Right (stored, proposed) => case run transitionAgent (stored, proposed) of
     Left err => failure err
-    Right (latest, state) => success latest state
+    Right next => success next.row
 
+covering
 main : IO ()
 main = do
   args <- getArgs
   case args of
-    [_, input] => putStrLn (run input)
+    [_, inputPath] => do
+      result <- readFile inputPath
+      case result of
+        Left _ => do
+          putStrLn (failure InvalidEncoding)
+          exitFailure
+        Right input => putStrLn (respond input)
     _ => do
       putStrLn (failure InvalidEncoding)
       exitFailure

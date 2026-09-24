@@ -26,3 +26,7 @@ jobs:
         run: make test
       - name: Production build
         run: npm run build
+      - name: Install Chromium for browser tests
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end browser journeys
+        run: npx playwright test

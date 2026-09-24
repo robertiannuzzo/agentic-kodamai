@@ -68,5 +68,22 @@
   "BadAmalgamation.idr": [
     "right hand side of bad",
     "Mismatch between"
+  ],
+  "OnboardingToFollow.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "Status",
+    "Employee"
+  ],
+  "WrongProvenance.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "other",
+    "chosen"
+  ],
+  "WrongAggregate.idr": [
+    "right hand side of bad",
+    "Can't solve constraint",
+    "reference"
   ]
 }

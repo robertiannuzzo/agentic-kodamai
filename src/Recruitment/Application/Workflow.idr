@@ -15,7 +15,7 @@ data Stage : Type where
 
 public export
 AuditRow : Type
-AuditRow = (event : Event ** Evidence event)
+AuditRow = Fact
 
 public export
 record CaseRecord where
@@ -24,6 +24,19 @@ record CaseRecord where
   generation : Nat
   stage : Stage
   history : List AuditRow
+
+||| Rebuild a persisted stage only by replaying its complete audit trail.
+||| Published adverts are not persisted by the workflow boundary in phase 1.
+export
+restoreStage : (ref : Nat) -> Fields -> List AuditRow -> Either DomainError Stage
+restoreStage ref f history = do
+  replayed <- replay ref f history
+  Right (case replayed of
+    InDraft values => Drafting values
+    InReview r pending => AwaitingReview r pending
+    InRework r held => NeedsRework r held
+    IsApproved r approval => Accepted r approval
+    IsDeclined r declined => Rejected r declined)
 
 ||| commit compares the expected generation and persists the complete aggregate,
 ||| including its audit trail. Nothing means insert, Just n means compare-and-swap.

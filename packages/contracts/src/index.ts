@@ -5,8 +5,7 @@ export type RequisitionStage =
   | "awaiting-review"
   | "approved"
   | "needs-rework"
-  | "declined"
-  | "advertising";
+  | "declined";
 
 export interface RequisitionFields {
   role: string;
@@ -25,7 +24,7 @@ export interface AuditEntry {
   detail: string;
 }
 
-export interface RequisitionCase extends RequisitionFields {
+export interface WorkflowCase extends RequisitionFields {
   reference: number;
   generation: number;
   revision: number;
@@ -33,10 +32,21 @@ export interface RequisitionCase extends RequisitionFields {
   history: AuditEntry[];
 }
 
+export interface RequisitionCase extends WorkflowCase {
+  tenantId: string;
+  requesterId: string;
+}
+
 export type ReviewDecision = "approve" | "decline" | "hold";
 
 export type WorkflowCommand =
-  | { kind: "create-draft"; actor: string; tick: number; fields: RequisitionFields }
+  | {
+      kind: "create-draft";
+      reference: number;
+      actor: string;
+      tick: number;
+      fields: RequisitionFields;
+    }
   | {
       kind: "update-draft";
       reference: number;
@@ -71,8 +81,7 @@ export type WorkflowCommand =
     };
 
 export interface WorkflowResult {
-  latestReference: number | null;
-  cases: RequisitionCase[];
+  result: WorkflowCase;
 }
 
 export interface ApiError {

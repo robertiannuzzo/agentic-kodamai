@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
@@ -9,7 +10,12 @@ import type {
   ReviewDecision,
   WorkflowCommand
 } from "../../../packages/contracts/src/index.js";
-import { RecruitmentStore, StoreError } from "./store.js";
+import {
+  RecruitmentStore,
+  StoreError,
+  workflowCase,
+  type CommitContext
+} from "./store.js";
 import { WorkflowClient, WorkflowError } from "./workflow.js";
 
 class HttpError extends Error {
@@ -25,12 +31,19 @@ class HttpError extends Error {
 interface Identity {
   actor: string;
   role: DemoRole;
+  tenantId: string;
+}
+
+interface Transition {
+  current: RequisitionCase | null;
+  command: WorkflowCommand;
 }
 
 export interface ApplicationOptions {
   databasePath: string;
   workflowExecutable?: string;
   webRoot?: string;
+  log?: (record: Record<string, string | number>) => void;
 }
 
 export interface Application {
@@ -48,12 +61,31 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   response.end(JSON.stringify(value));
 }
 
+function header(request: IncomingMessage, name: string, error: string): string {
+  const value = request.headers[name];
+  if (typeof value !== "string" || value.trim() === "") throw new HttpError(401, error);
+  return value.trim();
+}
+
 function identity(request: IncomingMessage): Identity {
-  const actor = request.headers["x-demo-actor"];
+  const actor = header(request, "x-demo-actor", "identity-required");
+  const tenantId = header(request, "x-demo-tenant", "tenant-required");
   const role = request.headers["x-demo-role"];
-  if (typeof actor !== "string" || actor.trim() === "") throw new HttpError(401, "identity-required");
   if (role !== "requester" && role !== "approver") throw new HttpError(401, "role-required");
-  return { actor: actor.trim(), role };
+  return { actor, role, tenantId };
+}
+
+function idempotencyKey(request: IncomingMessage): string {
+  const value = request.headers["idempotency-key"];
+  if (
+    typeof value !== "string" ||
+    value.length < 8 ||
+    value.length > 200 ||
+    !/^[A-Za-z0-9._:-]+$/u.test(value)
+  ) {
+    throw new HttpError(400, "idempotency-key-required");
+  }
+  return value;
 }
 
 function requireRole(actual: DemoRole, expected: DemoRole): void {
@@ -61,6 +93,10 @@ function requireRole(actual: DemoRole, expected: DemoRole): void {
 }
 
 async function body(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const contentType = request.headers["content-type"];
+  if (typeof contentType !== "string" || !contentType.toLowerCase().startsWith("application/json")) {
+    throw new HttpError(415, "json-content-type-required");
+  }
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
@@ -106,26 +142,55 @@ function fields(value: unknown): RequisitionFields {
 
 function pathReference(pathname: string): number | null {
   const match = /^\/api\/requisitions\/(\d+)(?:\/.*)?$/u.exec(pathname);
-  return match?.[1] === undefined ? null : Number(match[1]);
+  if (match?.[1] === undefined) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function stableValue(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableValue(record[key])}`)
+    .join(",")}}`;
+}
+
+function fingerprint(operation: string, input: unknown): string {
+  return createHash("sha256").update(stableValue({ operation, input })).digest("hex");
 }
 
 function mapError(error: unknown): HttpError {
   if (error instanceof HttpError) return error;
-  const code =
-    error instanceof WorkflowError || error instanceof StoreError ? error.code : "internal-server-error";
+  if (error instanceof StoreError) {
+    if (
+      error.code === "stale-version" ||
+      error.code === "audit-history-mismatch" ||
+      error.code === "idempotency-key-conflict"
+    ) {
+      return new HttpError(409, error.code);
+    }
+    return new HttpError(500, "internal-server-error");
+  }
+  const code = error instanceof WorkflowError ? error.code : "internal-server-error";
   if (code === "not-found") return new HttpError(404, code);
-  if (code === "stale-version" || code === "wrong-stage" || code === "audit-history-mismatch") {
+  if (code === "self-review-forbidden") return new HttpError(403, code);
+  if (code === "stale-version" || code === "wrong-stage") {
     return new HttpError(409, code);
   }
   if (
-    code.startsWith("invalid-") ||
+    code.startsWith("invalid-field:") ||
+    code === "invalid-reference" ||
+    code.startsWith("invalid-schema:") ||
     code === "reason-required" ||
     code === "identity-required" ||
+    code === "tenant-required" ||
     code === "role-required"
   ) {
     return new HttpError(400, code);
   }
-  return new HttpError(500, code);
+  return new HttpError(500, "internal-server-error");
 }
 
 function contentType(path: string): string {
@@ -162,8 +227,6 @@ function serveWeb(pathname: string, webRoot: string, response: ServerResponse): 
 export async function createApplication(options: ApplicationOptions): Promise<Application> {
   const store = new RecruitmentStore(options.databasePath);
   const workflow = new WorkflowClient(options.workflowExecutable);
-  const replayed = await workflow.evaluate(store.commands());
-  store.validateProjection(replayed);
 
   let mutationTail: Promise<void> = Promise.resolve();
   function serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -175,18 +238,59 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
     return result;
   }
 
-  async function mutate(command: WorkflowCommand): Promise<RequisitionCase> {
+  async function mutate(
+    user: Identity,
+    key: string,
+    operation: string,
+    input: unknown,
+    transition: () => Transition
+  ): Promise<RequisitionCase> {
+    const context: CommitContext = {
+      tenantId: user.tenantId,
+      actor: user.actor,
+      idempotencyKey: key,
+      operation,
+      requestFingerprint: fingerprint(operation, input)
+    };
     return serialize(async () => {
-      const result = await workflow.evaluate([...store.commands(), command]);
-      if (result.latestReference === null) throw new WorkflowError("missing-latest-case");
-      const latest = result.cases.find((candidate) => candidate.reference === result.latestReference);
-      if (latest === undefined) throw new WorkflowError("missing-latest-case");
-      store.commit(command, latest);
-      return latest;
+      const prior = store.idempotencyResult(context);
+      if (prior !== null) return prior;
+      const proposed = transition();
+      const result = await workflow.evaluate(
+        proposed.current === null ? null : workflowCase(proposed.current),
+        proposed.command
+      );
+      return store.commit(proposed.command, result.result, context);
     });
   }
 
+  function accessible(user: Identity, reference: number, ownerRequired: boolean): RequisitionCase {
+    const row = store.get(user.tenantId, reference);
+    if (row === null) throw new HttpError(404, "not-found");
+    if (ownerRequired && row.requesterId !== user.actor) {
+      throw new HttpError(404, "not-found");
+    }
+    return row;
+  }
+
   const server = createServer(async (request, response) => {
+    const suppliedRequestId = request.headers["x-request-id"];
+    const requestId =
+      typeof suppliedRequestId === "string" && /^[A-Za-z0-9._:-]{8,200}$/u.test(suppliedRequestId)
+        ? suppliedRequestId
+        : randomUUID();
+    const startedAt = Date.now();
+    response.setHeader("x-request-id", requestId);
+    response.once("finish", () => {
+      options.log?.({
+        event: "http-request",
+        requestId,
+        method: request.method ?? "UNKNOWN",
+        path: request.url ?? "/",
+        status: response.statusCode,
+        durationMs: Date.now() - startedAt
+      });
+    });
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
       if (!url.pathname.startsWith("/api/")) {
@@ -194,33 +298,37 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         throw new HttpError(404, "not-found");
       }
 
-      const user = identity(request);
       if (request.method === "GET" && url.pathname === "/api/health") {
-        json(response, 200, { status: "ok", workflow: "idris", requisitions: store.list().length });
+        json(response, 200, { status: "ok", workflow: "idris", storage: "sqlite" });
         return;
       }
+
+      const user = identity(request);
       if (request.method === "GET" && url.pathname === "/api/requisitions") {
-        json(response, 200, store.list());
+        json(response, 200, store.list(user.tenantId, user.role === "requester" ? user.actor : undefined));
         return;
       }
 
       const reference = pathReference(url.pathname);
       if (request.method === "GET" && reference !== null && url.pathname === `/api/requisitions/${reference}`) {
-        const result = store.get(reference);
-        if (result === null) throw new HttpError(404, "not-found");
-        json(response, 200, result);
+        json(response, 200, accessible(user, reference, user.role === "requester"));
         return;
       }
 
       if (request.method === "POST" && url.pathname === "/api/requisitions") {
         requireRole(user.role, "requester");
         const input = await body(request);
-        const result = await mutate({
-          kind: "create-draft",
-          actor: user.actor,
-          tick: Date.now(),
-          fields: fields(input.fields)
-        });
+        const key = idempotencyKey(request);
+        const result = await mutate(user, key, "create-draft", input, () => ({
+          current: null,
+          command: {
+            kind: "create-draft",
+            reference: store.allocateReference(),
+            actor: user.actor,
+            tick: Date.now(),
+            fields: fields(input.fields)
+          }
+        }));
         json(response, 201, result);
         return;
       }
@@ -228,13 +336,20 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       if (request.method === "PUT" && reference !== null && url.pathname === `/api/requisitions/${reference}`) {
         requireRole(user.role, "requester");
         const input = await body(request);
-        const result = await mutate({
-          kind: "update-draft",
-          reference,
-          generation: integer(input.generation, "generation"),
-          actor: user.actor,
-          tick: Date.now(),
-          fields: fields(input.fields)
+        const key = idempotencyKey(request);
+        const result = await mutate(user, key, "update-draft", input, () => {
+          const current = accessible(user, reference, true);
+          return {
+            current,
+            command: {
+              kind: "update-draft",
+              reference,
+              generation: integer(input.generation, "generation"),
+              actor: user.actor,
+              tick: Date.now(),
+              fields: fields(input.fields)
+            }
+          };
         });
         json(response, 200, result);
         return;
@@ -247,12 +362,19 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       ) {
         requireRole(user.role, "requester");
         const input = await body(request);
-        const result = await mutate({
-          kind: "submit-draft",
-          reference,
-          generation: integer(input.generation, "generation"),
-          actor: user.actor,
-          tick: Date.now()
+        const key = idempotencyKey(request);
+        const result = await mutate(user, key, "submit-draft", input, () => {
+          const current = accessible(user, reference, true);
+          return {
+            current,
+            command: {
+              kind: "submit-draft",
+              reference,
+              generation: integer(input.generation, "generation"),
+              actor: user.actor,
+              tick: Date.now()
+            }
+          };
         });
         json(response, 200, result);
         return;
@@ -265,18 +387,25 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       ) {
         requireRole(user.role, "approver");
         const input = await body(request);
+        const key = idempotencyKey(request);
         const decision = text(input.decision, "decision") as ReviewDecision;
         if (!["approve", "decline", "hold"].includes(decision)) {
           throw new HttpError(400, "invalid-decision");
         }
-        const result = await mutate({
-          kind: "review",
-          reference,
-          generation: integer(input.generation, "generation"),
-          actor: user.actor,
-          tick: Date.now(),
-          decision,
-          reason: text(input.reason ?? "", "reason")
+        const result = await mutate(user, key, "review", input, () => {
+          const current = accessible(user, reference, false);
+          return {
+            current,
+            command: {
+              kind: "review",
+              reference,
+              generation: integer(input.generation, "generation"),
+              actor: user.actor,
+              tick: Date.now(),
+              decision,
+              reason: text(input.reason ?? "", "reason")
+            }
+          };
         });
         json(response, 200, result);
         return;
@@ -289,13 +418,20 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       ) {
         requireRole(user.role, "requester");
         const input = await body(request);
-        const result = await mutate({
-          kind: "resubmit",
-          reference,
-          generation: integer(input.generation, "generation"),
-          actor: user.actor,
-          tick: Date.now(),
-          fields: fields(input.fields)
+        const key = idempotencyKey(request);
+        const result = await mutate(user, key, "resubmit", input, () => {
+          const current = accessible(user, reference, true);
+          return {
+            current,
+            command: {
+              kind: "resubmit",
+              reference,
+              generation: integer(input.generation, "generation"),
+              actor: user.actor,
+              tick: Date.now(),
+              fields: fields(input.fields)
+            }
+          };
         });
         json(response, 200, result);
         return;

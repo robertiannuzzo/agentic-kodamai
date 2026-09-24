@@ -28,20 +28,42 @@ const stageLabels: Record<RequisitionCase["stage"], string> = {
   "awaiting-review": "Awaiting review",
   approved: "Approved",
   "needs-rework": "Changes requested",
-  declined: "Declined",
-  advertising: "Advertising"
+  declined: "Declined"
 };
 
-function formatMoney(minor: number): string {
-  return new Intl.NumberFormat("en-US", {
+const errorMessages: Record<string, string> = {
+  "stale-version": "This requisition changed. Reload and try again.",
+  "self-review-forbidden": "You submitted this requisition, so someone else must review it.",
+  "reason-required": "Give a reason when declining or requesting changes.",
+  "wrong-stage": "That action is not available at this stage."
+};
+
+type DisplayCurrency = "GBP" | "USD";
+
+// Budgets are stored in pence. US dollars are a display conversion at a fixed,
+// indicative rate, not a live exchange rate.
+const INDICATIVE_USD_PER_GBP = 1.27;
+const currencyStorageKey = "kodamai.displayCurrency";
+
+function formatMoney(minor: number, currency: DisplayCurrency = "GBP"): string {
+  const pounds = minor / 100;
+  return new Intl.NumberFormat(currency === "GBP" ? "en-GB" : "en-US", {
     style: "currency",
-    currency: "USD",
+    currency,
     maximumFractionDigits: 0
-  }).format(minor / 100);
+  }).format(currency === "GBP" ? pounds : pounds * INDICATIVE_USD_PER_GBP);
+}
+
+function storedCurrency(): DisplayCurrency {
+  try {
+    return window.localStorage.getItem(currencyStorageKey) === "USD" ? "USD" : "GBP";
+  } catch {
+    return "GBP";
+  }
 }
 
 function formatTime(tick: number): string {
-  return new Intl.DateTimeFormat("en-US", {
+  return new Intl.DateTimeFormat("en-GB", {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(tick));
@@ -51,12 +73,14 @@ function FieldForm({
   initial,
   action,
   busy,
+  currency,
   onSubmit,
   onCancel
 }: {
   initial: RequisitionFields;
   action: string;
   busy: boolean;
+  currency: DisplayCurrency;
   onSubmit(fields: RequisitionFields): Promise<void>;
   onCancel?: () => void;
 }) {
@@ -105,7 +129,7 @@ function FieldForm({
           />
         </label>
         <label>
-          Annual budget (USD)
+          Annual budget (GBP)
           <input
             required
             min="1"
@@ -114,6 +138,11 @@ function FieldForm({
             value={budget}
             onChange={(event) => setBudget(event.target.value)}
           />
+          {currency === "USD" && Number(budget) > 0 ? (
+            <small className="field-hint">
+              ≈ {formatMoney(Math.round(Number(budget) * 100), "USD")} at an indicative rate
+            </small>
+          ) : null}
         </label>
       </div>
       <label>
@@ -123,7 +152,7 @@ function FieldForm({
           rows={5}
           value={value.justification}
           onChange={(event) => setValue({ ...value, justification: event.target.value })}
-          placeholder="Why does the organization need this role?"
+          placeholder="Why does the organisation need this role?"
         />
       </label>
       <div className="button-row">
@@ -206,8 +235,22 @@ function ReviewPanel({
 
 export function App() {
   const [role, setRole] = useState<DemoRole>("requester");
+  const [currency, setCurrency] = useState<DisplayCurrency>(storedCurrency);
+
+  function chooseCurrency(next: DisplayCurrency): void {
+    setCurrency(next);
+    try {
+      window.localStorage.setItem(currencyStorageKey, next);
+    } catch {
+      // Storage can be unavailable; the choice still applies for this session.
+    }
+  }
   const identity = useMemo<DemoIdentity>(
-    () => ({ role, actor: role === "requester" ? "requester@kodamai.test" : "approver@kodamai.test" }),
+    () => ({
+      role,
+      actor: role === "requester" ? "requester@kodamai.test" : "approver@kodamai.test",
+      tenantId: "demo"
+    }),
     [role]
   );
   const [rows, setRows] = useState<RequisitionCase[]>([]);
@@ -218,6 +261,11 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
 
   const selected = rows.find(({ reference }) => reference === selectedReference) ?? null;
+  const inbox =
+    role === "approver"
+      ? rows.filter((row) => row.stage === "awaiting-review" && row.requesterId !== identity.actor)
+      : [];
+  const others = rows.filter((row) => !inbox.includes(row));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -225,7 +273,14 @@ export function App() {
     try {
       const result = await listRequisitions(identity);
       setRows(result);
-      setSelectedReference((current) => current ?? result[0]?.reference ?? null);
+      const waiting = result.find(
+        (row) => identity.role === "approver" && row.stage === "awaiting-review" && row.requesterId !== identity.actor
+      );
+      setSelectedReference((current) =>
+        result.some(({ reference }) => reference === current)
+          ? current
+          : (waiting ?? result[0])?.reference ?? null
+      );
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Unable to load requisitions");
     } finally {
@@ -248,10 +303,31 @@ export function App() {
       accept(await operation());
     } catch (failure) {
       const message = failure instanceof Error ? failure.message : "Action failed";
-      setError(message === "stale-version" ? "This requisition changed. Reload and try again." : message);
+      setError(errorMessages[message] ?? message);
     } finally {
       setBusy(false);
     }
+  }
+
+  function renderRow(row: RequisitionCase) {
+    return (
+      <button
+        className={row.reference === selectedReference && !creating ? "selected" : ""}
+        key={row.reference}
+        onClick={() => {
+          setSelectedReference(row.reference);
+          setCreating(false);
+        }}
+      >
+        <span className={`status-dot ${row.stage}`} />
+        <span>
+          <strong>{row.role}</strong>
+          <small>
+            REQ-{String(row.reference).padStart(4, "0")} · {stageLabels[row.stage]}
+          </small>
+        </span>
+      </button>
+    );
   }
 
   return (
@@ -264,14 +340,29 @@ export function App() {
             <span>Recruitment workspace</span>
           </div>
         </div>
-        <div className="role-switch" aria-label="Demo role">
-          <span>Viewing as</span>
-          <button className={role === "requester" ? "active" : ""} onClick={() => setRole("requester")}>
-            Requester
-          </button>
-          <button className={role === "approver" ? "active" : ""} onClick={() => setRole("approver")}>
-            Approver
-          </button>
+        <div className="topbar-controls">
+          <div className="role-switch" role="group" aria-label="Display currency">
+            <span>Currency</span>
+            {(["GBP", "USD"] as const).map((option) => (
+              <button
+                aria-pressed={currency === option}
+                className={currency === option ? "active" : ""}
+                key={option}
+                onClick={() => chooseCurrency(option)}
+              >
+                {option === "GBP" ? "£ GBP" : "$ USD"}
+              </button>
+            ))}
+          </div>
+          <div className="role-switch" aria-label="Demo role">
+            <span>Viewing as</span>
+            <button className={role === "requester" ? "active" : ""} onClick={() => setRole("requester")}>
+              Requester
+            </button>
+            <button className={role === "approver" ? "active" : ""} onClick={() => setRole("approver")}>
+              Approver
+            </button>
+          </div>
         </div>
       </header>
 
@@ -290,25 +381,20 @@ export function App() {
           </div>
           {loading ? <p className="empty">Loading…</p> : null}
           {!loading && rows.length === 0 ? <p className="empty">No requisitions yet.</p> : null}
-          <nav className="requisition-list" aria-label="Requisitions">
-            {rows.map((row) => (
-              <button
-                className={row.reference === selectedReference && !creating ? "selected" : ""}
-                key={row.reference}
-                onClick={() => {
-                  setSelectedReference(row.reference);
-                  setCreating(false);
-                }}
-              >
-                <span className={`status-dot ${row.stage}`} />
-                <span>
-                  <strong>{row.role}</strong>
-                  <small>
-                    REQ-{String(row.reference).padStart(4, "0")} · {stageLabels[row.stage]}
-                  </small>
-                </span>
-              </button>
-            ))}
+          {role === "approver" && !loading ? (
+            <>
+              <h2 className="list-heading">
+                Awaiting your review <span className="count">{inbox.length}</span>
+              </h2>
+              {inbox.length === 0 ? <p className="empty compact">Nothing is waiting for your review.</p> : null}
+              <nav className="requisition-list" aria-label="Awaiting your review">
+                {inbox.map(renderRow)}
+              </nav>
+              {others.length > 0 ? <h2 className="list-heading">All requisitions</h2> : null}
+            </>
+          ) : null}
+          <nav className="requisition-list" aria-label={role === "approver" ? "All requisitions" : "Your requisitions"}>
+            {others.map(renderRow)}
           </nav>
         </aside>
 
@@ -328,6 +414,7 @@ export function App() {
               <FieldForm
                 action="Save draft"
                 busy={busy}
+                currency={currency}
                 initial={emptyFields}
                 onCancel={() => setCreating(false)}
                 onSubmit={(value) => perform(() => createDraft(identity, value))}
@@ -367,7 +454,10 @@ export function App() {
                   </div>
                   <div>
                     <span>Budget</span>
-                    <strong>{formatMoney(selected.budgetMinor)}</strong>
+                    <strong>{formatMoney(selected.budgetMinor, currency)}</strong>
+                    {currency === "USD" ? (
+                      <small>Stored as {formatMoney(selected.budgetMinor)}</small>
+                    ) : null}
                   </div>
                   <div>
                     <span>Revision</span>
@@ -391,6 +481,7 @@ export function App() {
                   <FieldForm
                     action="Save changes"
                     busy={busy}
+                    currency={currency}
                     initial={selected}
                     onSubmit={(value) => perform(() => updateDraft(identity, selected, value))}
                   />
@@ -414,13 +505,25 @@ export function App() {
                   <FieldForm
                     action="Revise and resubmit"
                     busy={busy}
+                    currency={currency}
                     initial={selected}
                     onSubmit={(value) => perform(() => resubmitRequisition(identity, selected, value))}
                   />
                 </section>
               ) : null}
 
-              {role === "approver" && selected.stage === "awaiting-review" ? (
+              {role === "approver" &&
+              selected.stage === "awaiting-review" &&
+              selected.requesterId === identity.actor ? (
+                <section className="review-panel">
+                  <p className="eyebrow">Separation of duties</p>
+                  <p>You submitted this requisition, so another approver must review it.</p>
+                </section>
+              ) : null}
+
+              {role === "approver" &&
+              selected.stage === "awaiting-review" &&
+              selected.requesterId !== identity.actor ? (
                 <ReviewPanel
                   busy={busy}
                   onReview={(decision, reason) => perform(() => reviewRequisition(identity, selected, decision, reason))}

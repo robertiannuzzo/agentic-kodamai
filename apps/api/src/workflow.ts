@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
-import { resolve } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type {
   AuditEntry,
-  RequisitionCase,
   RequisitionFields,
+  WorkflowCase,
   WorkflowCommand,
   WorkflowResult
 } from "../../../packages/contracts/src/index.js";
@@ -52,7 +54,7 @@ export function decodeFrames(input: string): string[] {
   return values;
 }
 
-function fieldArgs(fields: RequisitionFields): string[] {
+function fieldValues(fields: RequisitionFields): string[] {
   return [
     fields.role,
     fields.department,
@@ -62,17 +64,40 @@ function fieldArgs(fields: RequisitionFields): string[] {
   ];
 }
 
-function commandFields(command: WorkflowCommand): string[] {
+function auditValues(entry: AuditEntry): string[] {
+  return [
+    entry.event,
+    entry.actor,
+    String(entry.tick),
+    String(entry.reference),
+    String(entry.revision),
+    entry.detail
+  ];
+}
+
+function caseValues(row: WorkflowCase): string[] {
+  return [
+    String(row.reference),
+    String(row.generation),
+    row.stage,
+    String(row.revision),
+    ...fieldValues(row),
+    String(row.history.length),
+    ...row.history.flatMap(auditValues)
+  ];
+}
+
+function commandValues(command: WorkflowCommand): string[] {
   switch (command.kind) {
     case "create-draft":
-      return [command.actor, String(command.tick), ...fieldArgs(command.fields)];
+      return [String(command.reference), command.actor, String(command.tick), ...fieldValues(command.fields)];
     case "update-draft":
       return [
         String(command.reference),
         String(command.generation),
         command.actor,
         String(command.tick),
-        ...fieldArgs(command.fields)
+        ...fieldValues(command.fields)
       ];
     case "submit-draft":
       return [
@@ -96,18 +121,21 @@ function commandFields(command: WorkflowCommand): string[] {
         String(command.generation),
         command.actor,
         String(command.tick),
-        ...fieldArgs(command.fields)
+        ...fieldValues(command.fields)
       ];
   }
 }
 
-function encodeCommandLog(commands: readonly WorkflowCommand[]): string {
-  const values = ["recruitment-workflow-command-log-v1", String(commands.length)];
-  for (const command of commands) {
-    const args = commandFields(command);
-    values.push(command.kind, String(args.length), ...args);
-  }
-  return encodeFrames(values);
+export function encodeTransition(current: WorkflowCase | null, command: WorkflowCommand): string {
+  const args = commandValues(command);
+  return encodeFrames([
+    "recruitment-workflow-transition-v2",
+    current === null ? "none" : "some",
+    ...(current === null ? [] : caseValues(current)),
+    command.kind,
+    String(args.length),
+    ...args
+  ]);
 }
 
 function safeNumber(value: string): number {
@@ -150,11 +178,11 @@ function readAudit(reader: FieldReader): AuditEntry {
   };
 }
 
-function readCase(reader: FieldReader): RequisitionCase {
+function readCase(reader: FieldReader): WorkflowCase {
   const reference = reader.number();
   const generation = reader.number();
-  const stage = reader.read() as RequisitionCase["stage"];
-  if (!["draft", "awaiting-review", "approved", "needs-rework", "declined", "advertising"].includes(stage)) {
+  const stage = reader.read() as WorkflowCase["stage"];
+  if (!["draft", "awaiting-review", "approved", "needs-rework", "declined"].includes(stage)) {
     throw new WorkflowError("invalid-worker-response");
   }
   const revision = reader.number();
@@ -181,17 +209,15 @@ function readCase(reader: FieldReader): RequisitionCase {
 
 function decodeResult(output: string): WorkflowResult {
   const reader = new FieldReader(decodeFrames(output));
-  if (reader.read() !== "recruitment-workflow-result-v1") {
+  if (reader.read() !== "recruitment-workflow-transition-result-v2") {
     throw new WorkflowError("invalid-worker-response");
   }
   const status = reader.read();
   if (status === "error") throw new WorkflowError(reader.read());
   if (status !== "ok") throw new WorkflowError("invalid-worker-response");
-  const latest = reader.read();
-  const caseCount = reader.number();
-  const cases = Array.from({ length: caseCount }, () => readCase(reader));
+  const result = readCase(reader);
   if (!reader.complete) throw new WorkflowError("invalid-worker-response");
-  return { latestReference: latest === "" ? null : safeNumber(latest), cases };
+  return { result };
 }
 
 export class WorkflowClient {
@@ -201,9 +227,12 @@ export class WorkflowClient {
     this.executable = executable;
   }
 
-  async evaluate(commands: readonly WorkflowCommand[]): Promise<WorkflowResult> {
+  async evaluate(current: WorkflowCase | null, command: WorkflowCommand): Promise<WorkflowResult> {
+    const directory = await mkdtemp(join(tmpdir(), "recruitment-workflow-"));
+    const inputPath = join(directory, "transition.frames");
     try {
-      const { stdout } = await execFileAsync(this.executable, [encodeCommandLog(commands)], {
+      await writeFile(inputPath, encodeTransition(current, command), { encoding: "utf8", mode: 0o600 });
+      const { stdout } = await execFileAsync(this.executable, [inputPath], {
         cwd: process.cwd(),
         encoding: "utf8",
         maxBuffer: 8 * 1024 * 1024,
@@ -214,6 +243,8 @@ export class WorkflowClient {
       if (error instanceof WorkflowError) throw error;
       const message = error instanceof Error ? error.message : "workflow-process-failed";
       throw new WorkflowError(`workflow-process-failed:${message}`);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   }
 }

@@ -41,6 +41,36 @@ Each prompt builder supplies a continuation that selects the next request from t
 
 `execute plan` returns the full dependent spine response, preserving every intermediate result and its evidence. The summary handler returns the terminal outcome for convenient display. Callers needing the complete audit trace use `execute`; the summary is intentionally lossy. The persistent workflow service separately stores all stage evidence in its case aggregate.
 
+## The live write path
+
+The web application's writes run through containers too. `Adapters.Transition` gives each protected command its own container, with a reply indexed by the requisition it targets and the generation it must reach:
+
+```idris
+record Next (ref : Nat) (generation : Nat) where
+  row : CaseRecord
+  sameCase : row.reference = ref
+  advanced : row.generation = generation
+
+ReviewC = MkCont (CaseRecord, Nat, Nat, Context, Decision)
+                 (\(_, ref, expected, _, _) => Either DomainError (Next ref (S expected)))
+
+WorkerC = Sum RefuseC (Sum CreateC (Sum UpdateC (Sum SubmitC (Sum ReviewC ResubmitC))))
+```
+
+Exactly one command is asked per write, so the worker interface is a sum and `workerAgent` is built with `sumAgent`. `dispatch : Handler TransitionC WorkerC` delegates a `(Maybe CaseRecord, Command)` prompt to its branch (or to `RefuseC` when no aggregate exists, or one exists for a create), and its amalgamation is checked per branch against the high-level reply `Next (target command) (after command)`. `transitionAgent = compose dispatch workerAgent` is what `WorkflowMain` runs for every HTTP mutation. The `Next` evidence is manufactured by a decidable check (`decEq`), which is the design note's Q2 cost made concrete; `WrongAggregate` shows that returning the loaded row unchanged does not compile.
+
+## Hire: the missing morphism
+
+`HireC` is the stage-2 link from the design note, section 4:
+
+```idris
+HireC = MkCont (a : Advert ** (Score a, Context, Starter))
+  (\(a ** (s, _, _)) => Either DomainError
+                          (e : Employee ** provenanceOf e = (a ** scoredApplication s)))
+```
+
+The reply owes an employee and a proof of the application it came from. `Employee`'s constructor is private, so `hire` is the only way to produce one. `OnboardingToFollow` shows that the legacy reply (status changes only) is a type error; `WrongProvenance` shows that hiring from one application while claiming another's provenance is too. The CLI demo runs `hireAgent` after the spine and prints the provenance.
+
 ## Effects and lifecycle
 
 The `Plan` is a pure demonstration input containing an explicit human decision, validated draft, versioned extracted CV text, schema and application input. It does not invent a hiring decision or invoke a model. The composition root obtains the CV text through the extraction agent before invoking the pure spine.

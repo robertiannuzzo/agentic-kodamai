@@ -11,6 +11,14 @@ export
 emptyCases : CaseMemory
 emptyCases = Cases 1 []
 
+||| Build the minimal repository state used by a single-aggregate boundary.
+export
+transitionCases : Nat -> Maybe CaseRecord -> Either DomainError CaseMemory
+transitionCases ref Nothing =
+  if ref == 0 then Left InvalidReference else Right (Cases ref [])
+transitionCases ref (Just row) =
+  if ref == row.reference then Right (Cases (S ref) [row]) else Left NotFound
+
 lookupCase : Nat -> List CaseRecord -> Either DomainError CaseRecord
 lookupCase _ [] = Left NotFound
 lookupCase ref (row :: rest) = if row.reference == ref then Right row else lookupCase ref rest

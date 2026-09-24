@@ -9,6 +9,7 @@ data DomainError = InvalidField String | InvalidReference | InvalidReason
                  | InvalidSchema String | AnswerMismatch | SkillMismatch
                  | InvalidCV | ExtractionFailed | IdempotencyConflict
                  | PersistenceFailed | InvalidEncoding | NotFound | StaleVersion | WrongStage
+                 | SelfReview | InvalidHistory
 
 public export
 Show DomainError where
@@ -26,6 +27,8 @@ Show DomainError where
   show NotFound = "not-found"
   show StaleVersion = "stale-version"
   show WrongStage = "wrong-stage"
+  show SelfReview = "self-review-forbidden"
+  show InvalidHistory = "invalid-history"
 
 public export
 nonBlank : String -> Bool
@@ -43,7 +46,7 @@ validContext c = if nonBlank c.actor then Right () else Left (InvalidField "acto
 
 public export
 data Event = DraftCreated | DraftUpdated | Submitted | ApprovedEvent | DeclinedEvent | HeldEvent
-           | Revised | AdvertCreated | ApplicationScored
+           | Revised | AdvertCreated | ApplicationScored | Hired
 
 public export
 Show Event where
@@ -56,6 +59,7 @@ Show Event where
   show Revised = "revised"
   show AdvertCreated = "advert-created"
   show ApplicationScored = "application-scored"
+  show Hired = "hired"
 
 ||| The event kind is part of the response type. Actor/time authenticity is external.
 public export

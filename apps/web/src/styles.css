@@ -82,6 +82,19 @@ textarea:focus-visible {
   width: 42px;
 }
 
+.topbar-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.field-hint {
+  color: #5d6a63;
+  font-size: 12px;
+  font-weight: 400;
+}
+
 .role-switch {
   align-items: center;
   background: rgba(255, 255, 255, 0.08);
@@ -217,8 +230,7 @@ textarea:focus-visible {
   width: 8px;
 }
 
-.status-dot.approved,
-.status-dot.advertising {
+.status-dot.approved {
   background: #258257;
 }
 
@@ -237,6 +249,33 @@ textarea:focus-visible {
 .empty {
   color: #737e77;
   margin-top: 24px !important;
+}
+
+.empty.compact {
+  font-size: 14px;
+  margin-top: 10px !important;
+}
+
+.list-heading {
+  align-items: center;
+  color: #5d6a63;
+  display: flex;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 8px;
+  letter-spacing: 0.06em;
+  margin: 26px 0 0;
+  text-transform: uppercase;
+}
+
+.list-heading .count {
+  background: #d4992d;
+  border-radius: 999px;
+  color: #17211c;
+  font-size: 11px;
+  letter-spacing: 0;
+  padding: 2px 8px;
 }
 
 .main-panel {
@@ -331,6 +370,7 @@ textarea:focus-visible {
 }
 
 .facts span,
+.facts small,
 .justification span {
   color: #6b766f;
   font-size: 12px;
@@ -503,6 +543,7 @@ hr {
     padding: 16px;
   }
 
+  .topbar-controls,
   .role-switch {
     width: 100%;
   }

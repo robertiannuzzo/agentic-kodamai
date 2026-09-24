@@ -22,16 +22,19 @@ Run `make test` with the pinned compiler. The test runner rejects compiler-versi
 | `WrongContainerReply` | Return a string for a prompt requiring a natural number |
 | `BrokenSequence` | Feed a natural-number reply into a string prompt without a conversion |
 | `BadAmalgamation` | Return a low-level Boolean where the high-level handler owes a natural number |
+| `WrongAggregate` | Answer a review with the loaded aggregate instead of the next one for this reference and generation |
+| `OnboardingToFollow` | Reply to a hire with a status change instead of an employee with provenance |
+| `WrongProvenance` | Hire from one scored application while claiming another's provenance |
 
 For example, the final line of `SwapQuestions` yields `Mismatch between: old and edited.` To make it compile, a developer would need to construct new dependent values or supply a valid equality proof; merely keeping the same numeric ID cannot do so.
 
 ## Runtime coverage
 
-The 195 checks cover field validation, all human decision branches, hold/rework lineage, required evidence, unique reference allocation, stale writes, wrong-stage operations, one publication per case, schema errors, request/question/skill mismatches, extraction failures, persistence failures, retries and payload conflicts, exact CV version matching, golden score breakdowns, empty inputs, normalization, keyword repetition, capped experience, and codec round trips/rejections.
+The 213 checks cover field validation, separation of duties, audit-trail replay (legal trails, self-approval, missing submission, wrong revision, wrong requisition, unsubmitted fields, empty trail), routing through the `transitionAgent` container, hire provenance, all human decision branches, hold/rework lineage, required evidence, unique reference allocation, stale writes, wrong-stage operations, one publication per case, schema errors, request/question/skill mismatches, extraction failures, persistence failures, retries and payload conflicts, exact CV version matching, golden score breakdowns, empty inputs, normalization, keyword repetition, capped experience, and codec round trips/rejections.
 
 Of these, 101 generated cases sweep years 0 through 100 and check monotonicity, saturation, independence of scoring components, and serialization round trips. Separate golden cases exercise boundary totals. This provides reproducible bounded invariant coverage; it is **not** randomized property testing, shrinking, an exhaustive proof of arithmetic correctness, or a substitute for database concurrency tests. Phase 1 deliberately uses only bundled libraries rather than introducing a separately versioned property-testing package.
 
-The demo smoke test compiles the executable, runs it, checks exit success and checks its total and audit payload. Container-algebra checks exercise dependent replies, handler composition, identity/associativity examples, sequence continuations, sum routing, tensor, product, CV extraction, and successful/stopped five-link compositions.
+The demo smoke test compiles the executable, runs it, checks exit success and checks its total, audit payload and hire provenance line. Container-algebra checks exercise dependent replies, handler composition, identity/associativity examples, sequence continuations, sum routing, tensor, product, CV extraction, and successful/stopped five-link compositions.
 
 ## Formatting and linting
 
@@ -42,5 +45,11 @@ No third-party Idris formatter is pinned. The dependency-free hygiene check enfo
 On 2026-09-18, macOS with Idris `0.8.0-fd405085b` and Chez: all 195 runtime checks, one positive fixture, 14 negative fixtures, hygiene checks and executable smoke passed. The direct compiler path was used because the installed package-manager wrapper writes to its global cache.
 
 On 2026-09-23, the Slice 1 integration suite additionally passed the requester-to-approver rework flow, role refusal, stale-generation refusal, Unicode and multiline protocol transport, invalid-field propagation, SQLite restart, and full command-log reconstruction through the Idris worker. The React production bundle and TypeScript API compiled successfully.
+
+On 2026-09-23, Slice 1.1 replaced global command replay with checked single-aggregate transitions. Six HTTP integration tests pass the complete workflow, invalid-field propagation, equal-retry deduplication, conflicting key refusal, tenant/requester isolation, two-process duplicate delivery, durable restart, and in-place migration from the Slice 1 schema. The migration test also verifies ownership derivation and continued reference allocation.
+
+On 2026-09-24, the core suite passed 213 runtime checks, one positive fixture and 17 negative fixtures. Ten HTTP integration tests passed, adding self-review refusal through the role switch and refusal of a directly tampered SQLite row whose forged `held` fact names the submitter as reviewer.
+
+The same day, two Playwright journeys passed against the production build in Chrome (`make e2e`).
 
 The project-local compiler bootstrap and GitHub Actions run have not been executed end-to-end here. The pinned source archive checksum was verified; local tests used the matching installed compiler. There are no deployment-container checks.

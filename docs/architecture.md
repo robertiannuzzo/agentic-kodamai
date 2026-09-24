@@ -4,14 +4,15 @@
 
 One application, a small mathematical-container module, a pure domain core, application services and deterministic adapters. The preparation documents motivate prompt-dependent replies and composable handlers. The implemented container algebra is described in [the walkthrough](containers.md).
 
-Slice 1 introduces a React interface and TypeScript HTTP boundary for requisitions and approvals. Protected writes cross a versioned process boundary into the compiled Idris workflow executable. SQLite retains an append-only command log and read projection; startup replay through Idris validates durable reconstruction. See [the Slice 1 design](slice-1.md).
+Slice 1 introduces a React interface and TypeScript HTTP boundary for requisitions and approvals. Protected writes cross a versioned process boundary into the compiled Idris workflow executable. Slice 1.1 makes transactional SQLite state authoritative, retains append-only audit facts, and asks Idris to check and transition one aggregate per write. See [the Slice 1 design](slice-1.md).
 
 ```mermaid
 flowchart LR
   Web[React requester / approver UI] --> API[TypeScript HTTP boundary]
   API --> Worker[Idris workflow executable]
-  Worker --> Workflow[Workflow use cases]
-  API --> SQLite[(SQLite command log + projection)]
+  Worker --> Transition[TransitionC dispatch handler + Sum of command agents]
+  Transition --> Workflow[Workflow use cases]
+  API --> SQLite[(SQLite state + audit + idempotency)]
   CLI[CLI demonstration] --> Spine[Composed container spine]
   Spine --> Core[Pure typed domain core]
   CLI --> Intake[Application intake]
@@ -30,16 +31,20 @@ flowchart LR
 ## Five stages
 
 1. `newDraft` validates role, department, positive headcount, positive budget in minor units, and justification. `submit` allocates a reference supplied by the boundary and returns a dependent pair `(r ** Pending r)`. The opaque `Pending r` carries mandatory `Evidence Submitted`.
-2. `decide` returns `Ruling r`: approval evidence, decline evidence with a nonblank reason, or held evidence with a nonblank reason. `revise` requires `Held r`, retains the reference, increments the revision, and returns revision evidence. It cannot carry the old approval to the new revision.
+2. `decide` returns `Ruling r`: approval evidence, decline evidence with a nonblank reason, or held evidence with a nonblank reason. It reads the submitter from the `Pending r` evidence and refuses a ruling by the same actor (`SelfReview`), so separation of duties cannot be skipped by a caller. `revise` requires `Held r`, retains the reference, increments the revision, and returns revision evidence. It cannot carry the old approval to the new revision.
 3. `publish` requires `Approved r`. It validates positive/unique question and skill IDs, nonempty question and skill lists, nonblank prompts/expected answers/keywords, and positive weights and target years. The opaque advert owns these values and required publication evidence. No edit operation exists.
 4. `receive` returns `Application a`. `Answers (questionsOf a)` and `Experience (skillsOf a)` follow the actual ordered lists, including their contents. Raw entries must name every ID exactly once in the advertised order; missing, extra, duplicate, or reordered entries fail validation. Blank answers and empty extracted CV text are allowed so completeness can measure them. A CV locator and immutable version are required.
-5. `compute` returns an opaque `Score a`, retaining the application and four-part breakdown. `applyAndScore` performs validation, extraction, application construction, scoring and required evidence within the repository's score-once operation. No hiring outcome is produced.
+5. `compute` returns an opaque `Score a`, retaining the application and four-part breakdown. `applyAndScore` performs validation, extraction, application construction, scoring and required evidence within the repository's score-once operation. The score itself produces no hiring outcome.
+
+Stage 2 preview: `Core.Hire.hire` is the design note's missing morphism. Given a `Score a`, it returns `(e : Employee ** provenanceOf e = (a ** scoredApplication s))`. `Employee` has a private constructor, so an employee cannot exist without the scored application it came from, and a reply of bare status changes ("onboarding to follow") does not typecheck. It is exercised by the CLI and tests; the people record is not yet persisted.
 
 The type of `Extractor.extract` is `(input : CVInput) -> Either DomainError (CVText input)`: its reply depends on its prompt. The repository and workflow APIs similarly use prompt-dependent values. `ExtractionC` and `extractionAgent` expose that port as a mathematical container and direct-answer handler. The five-link `Spine` composes domain agents with sequence and sum; operational use cases retain state across separate actions.
 
 ## Persistence and concurrency
 
-For Slice 1, SQLite stores an append-only log of versioned workflow commands, a requisition projection, and ordinal audit entries. The TypeScript boundary replays the complete command log through the Idris executable before every protected write and on startup. A database transaction then persists the accepted command, updated projection, and new evidence together. Expected generations are checked in Idris and again in the transaction. In-process serialization prevents overlapping writes in the local server; PostgreSQL transactions and tenant-aware constraints remain required for a horizontally scaled deployment.
+SQLite stores current requisition state, ordinal append-only audit entries, recorded schema migrations, reference allocation, and actor-scoped idempotency responses. For each protected write, TypeScript loads one tenant-scoped aggregate and sends it with the proposed command through protocol v2. Idris does not trust the stored stage label: it replays the aggregate's complete audit trail through the requisition transitions (`Requisition.replay`) and rebuilds `Pending`, `Held`, or `Approved` only if every fact targets this reference and the right revision, events occur in a legal order, no reviewer ruled on their own submission, and the current fields match what was submitted. The stored stage and revision must then agree with the replayed ones. It then applies one transition through `transitionAgent`, whose reply `Next ref generation` is indexed by the targeted requisition and the generation it must reach. A database transaction compare-and-swaps the generation and commits state, new evidence, and the idempotent response together. In-process serialization improves local behavior; the database transaction and uniqueness constraint handle competing local processes. PostgreSQL transactions and database-enforced tenant constraints remain required for horizontal deployment.
+
+The former unversioned command log is not a source of truth. Migration 3 preserves it as `legacy_command_log`; newer releases do not replay historical requests under changed business rules. This chooses transactional state plus audit over full event sourcing. Revisit that choice only if a bounded part of the domain gains a concrete need for temporal reconstruction beyond the audit record.
 
 `CaseRepository` stores a case aggregate with stage, generation and audit history. `start` obtains a proposed fresh reference and inserts generation zero. `review`, `resubmit`, and `advertise` load the current generation, enforce the current stage, and commit via compare-and-swap. Generation advances on every transition; requisition revision advances only on rework. A losing concurrent writer must retry from a fresh load. Reference allocation collisions are also rejected by commit. One advert per requisition is the phase-1 policy; its numeric ID is the requisition reference.
 
@@ -52,6 +57,9 @@ The future database adapter must use unique constraints, transactional generatio
 | Compiler or module-boundary guarantee | Runtime, adapter, or trust responsibility |
 |---|---|
 | An advert needs approval indexed by its exact requisition value | The reviewer is authorized; the decision reflects the latest persisted state |
+| Approval can only be ruled by someone other than the submitter, and persisted approval is only rebuilt from a legal, independently reviewed trail | Stored facts are authentic: who really acted is attested by identity and the database, not by Idris |
+| A worker reply names the requisition it was asked about and advances exactly one generation | The SQL adapter's compare-and-swap honors the same generation |
+| A hired employee carries a proof of the application it came from | The hire decision itself is a legitimate human decision |
 | Applications/scores/stores cannot be silently reindexed to another advert | Database rows point to immutable complete advert snapshots and reconstruct them safely |
 | Answer/experience types retain the ordered question/skill values | User input is checked against those values; IDs and stored content are authentic |
 | Successful core transitions supply evidence of the required event kind | Evidence actor/time/detail are true; persistence retains it atomically |
@@ -79,7 +87,7 @@ The demo gives `5 + 18 + 20 + 3 = 46`. Policy identity is `recruitment-score-v1`
 
 `Adapters.Codec` encodes only `RawApplication`, using a versioned sequence of length-prefixed fields. UTF-8 is the transport encoding; lengths count Unicode characters, not bytes. Delimiters and newlines inside values round-trip. The decoder requires canonical decimal numbers, rejects trailing data/unknown versions, and limits the full message to 100,000 characters and numbers to 20 digits. The encoder rejects values outside the same limits rather than generating undecodable output.
 
-Decoding yields untrusted input, not `Approved`, `Advert`, `Application`, or `Score`. Intake must validate it against the actual loaded advert. Durable aggregate serialization and proof reconstruction are deliberately not implemented; loading an integer ID is insufficient to establish advert equality. A production adapter will need a schema/version registry, checked reconstruction, and an existential package retaining the exact advert with its dependent applications and receipts.
+Decoding yields untrusted input, not `Approved`, `Advert`, `Application`, or `Score`. Intake must validate it against the actual loaded advert. Requisition witnesses are reconstructed by replaying their audit trail (ADR 008); advert, application and score persistence is not implemented yet, and loading an integer ID is insufficient to establish advert equality. A production adapter will need a schema/version registry, checked reconstruction, and an existential package retaining the exact advert with its dependent applications and receipts.
 
 ## Error vocabulary
 
@@ -97,6 +105,8 @@ Errors are an algebraic data type, never exception strings inside the core. Thei
 | `PersistenceFailed` | Adapter cannot commit |
 | `InvalidEncoding` | Invalid/unsupported/out-of-bounds wire input |
 | `NotFound`, `StaleVersion`, `WrongStage` | Missing aggregate, concurrent/stale request, invalid transition |
+| `SelfReview` | The submitter of a revision attempted to rule on it |
+| `InvalidHistory` | A persisted audit trail is not a legal run of the transitions |
 
 ## Assumptions for this slice
 

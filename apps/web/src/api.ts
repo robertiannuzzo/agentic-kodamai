@@ -9,6 +9,7 @@ import type {
 export interface DemoIdentity {
   actor: string;
   role: DemoRole;
+  tenantId: string;
 }
 
 async function request<T>(
@@ -16,12 +17,15 @@ async function request<T>(
   path: string,
   init: RequestInit = {}
 ): Promise<T> {
+  const mutating = init.method !== undefined && init.method !== "GET";
   const response = await fetch(path, {
     ...init,
     headers: {
       "content-type": "application/json",
       "x-demo-actor": identity.actor,
       "x-demo-role": identity.role,
+      "x-demo-tenant": identity.tenantId,
+      ...(mutating ? { "idempotency-key": crypto.randomUUID() } : {}),
       ...init.headers
     }
   });
