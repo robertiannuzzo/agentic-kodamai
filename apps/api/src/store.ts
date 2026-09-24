@@ -696,6 +696,7 @@ export class RecruitmentStore {
     const erased = this.database
       .prepare(`UPDATE applications
         SET candidate_name = ?, candidate_actor = 'erased:' || reference || ':' || application_id,
+            evidence_actor = 'erased:' || reference || ':' || application_id,
             cv_text = '', cv_version = 'erased', erased_at = ?, erasure_reason = ?
         WHERE reference = ? AND application_id = ? AND erased_at IS NULL`)
       .run(ERASED_NAME, now, reason, reference, applicationId);

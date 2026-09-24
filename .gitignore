@@ -7,3 +7,4 @@ var/
 Prep docs/
 test-results/
 playwright-report/
+.claude/

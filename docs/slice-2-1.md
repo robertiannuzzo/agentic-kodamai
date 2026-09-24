@@ -38,7 +38,7 @@ A review does not trust the stored score. `assessHandler` runs the stored inputs
 | Recruiter erasure | `POST /api/requisitions/:ref/applications/:id/erase` with a reason, for requests received elsewhere |
 | Retention | Applications are anonymised after `APPLICATION_RETENTION_DAYS` (default 180) by maintenance at startup and hourly |
 
-Erasure clears the name, candidate email, CV text and hash, free-text answers, review reason and note, and the candidate's idempotency records (their key is the email). The score, the scoring evidence and the review evidence remain, anonymised. The database permits exactly this: `applications_erasure_only` and matching triggers reject any other update, and deletes remain blocked.
+Erasure clears the name, candidate email, CV text and hash, free-text answers, review reason and note, and the candidate's idempotency records (their key is the email). The scoring evidence names the candidate as its actor, so that is replaced with the same `erased:` pseudonym (fixed in 3.1; an external review found it surviving erasure). The score, the scoring evidence and the review evidence remain, anonymised. The database permits exactly this: `applications_erasure_only` and matching triggers compare every other column and reject any other update, and deletes remain blocked. People records accept no updates at all.
 
 The trade-off is deliberate and one-way: after erasure a stored score can no longer be re-derived, so an erased application cannot be reviewed (`409 application-erased`). Erasure beats reproducibility.
 
