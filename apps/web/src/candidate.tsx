@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { ApplicationSubmission, OpenAdvert } from "../../../packages/contracts/src/index";
-import { applyToAdvert, listOpenAdverts, type DemoIdentity } from "./api";
+import { applyToAdvert, listOpenAdverts, withdrawApplication, type DemoIdentity } from "./api";
 
 function ApplyForm({
   advert,
@@ -13,7 +13,7 @@ function ApplyForm({
 }) {
   const [candidateName, setCandidateName] = useState("");
   const [cvText, setCvText] = useState("");
-  const [consent, setConsent] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [years, setYears] = useState<Record<number, string>>({});
 
@@ -22,7 +22,7 @@ function ApplyForm({
     await onApply({
       candidateName,
       cvText,
-      consent,
+      acknowledgedPrivacyNotice: acknowledged,
       answers: advert.questions.map(({ questionId }) => ({ questionId, answer: answers[questionId] ?? "" })),
       years: advert.skills.map(({ skillId }) => ({ skillId, years: Number(years[skillId] ?? "0") }))
     });
@@ -73,15 +73,33 @@ function ApplyForm({
           placeholder="Paste the text of your CV"
         />
       </label>
+      <section className="privacy-notice" aria-labelledby={`privacy-${advert.reference}`}>
+        <h2 id={`privacy-${advert.reference}`}>How we use your application</h2>
+        <ul>
+          <li>
+            Kodamai processes your application to take steps you have asked for before a possible employment
+            contract. We ask only for what we need to assess it.
+          </li>
+          <li>
+            Your answers and experience are scored by a fixed, versioned rule set. A person reviews every
+            application and makes every decision; the score never decides on its own.
+          </li>
+          <li>
+            We keep your application for {advert.retentionDays} days, then remove your personal data
+            automatically. You can withdraw and erase it at any time from this page.
+          </li>
+        </ul>
+      </section>
       <label className="checkbox">
-        <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />
-        <span>
-          I consent to Kodamai processing this application to assess my suitability for this role. My answers
-          are scored by a fixed, published policy and every score is reviewed by a person.
-        </span>
+        <input
+          type="checkbox"
+          checked={acknowledged}
+          onChange={(event) => setAcknowledged(event.target.checked)}
+        />
+        <span>I have read how my application will be used.</span>
       </label>
       <div className="button-row">
-        <button className="primary" disabled={busy || !consent} type="submit">
+        <button className="primary" disabled={busy || !acknowledged} type="submit">
           {busy ? "Sending…" : "Submit application"}
         </button>
       </div>
@@ -121,6 +139,26 @@ export function CandidateWorkspace({
   useEffect(() => void load(), [load]);
 
   const advert = adverts.find(({ reference }) => reference === selected) ?? null;
+  const [confirmingWithdrawal, setConfirmingWithdrawal] = useState(false);
+
+  useEffect(() => setConfirmingWithdrawal(false), [selected, identity]);
+
+  async function withdraw(): Promise<void> {
+    if (advert === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await withdrawApplication(identity, advert.reference);
+      setAdverts((current) =>
+        current.map((a) => (a.reference === advert.reference ? { ...a, applied: false } : a))
+      );
+      setConfirmingWithdrawal(false);
+    } catch (failure) {
+      setError(describeError(failure instanceof Error ? failure.message : "request-failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function apply(submission: ApplicationSubmission): Promise<void> {
     if (advert === null) return;
@@ -189,10 +227,27 @@ export function CandidateWorkspace({
               We look for experience with {advert.skills.map(({ keyword }) => keyword).join(", ")}.
             </p>
             {advert.applied ? (
-              <div className="notice" role="status">
-                <strong>Application received.</strong> A member of the team will review it. You can apply to each
-                role once.
-              </div>
+              <>
+                <div className="notice" role="status">
+                  <strong>Application received.</strong> A member of the team will review it. You can apply to each
+                  role once.
+                </div>
+                <div className="button-row withdraw-row">
+                  {confirmingWithdrawal ? (
+                    <>
+                      <span>This erases your name, email, CV and answers.</span>
+                      <button className="danger" disabled={busy} onClick={() => void withdraw()}>
+                        Confirm withdrawal
+                      </button>
+                      <button disabled={busy} onClick={() => setConfirmingWithdrawal(false)}>
+                        Keep my application
+                      </button>
+                    </>
+                  ) : (
+                    <button onClick={() => setConfirmingWithdrawal(true)}>Withdraw and erase my application</button>
+                  )}
+                </div>
+              </>
             ) : (
               <ApplyForm key={advert.reference} advert={advert} busy={busy} onApply={apply} />
             )}

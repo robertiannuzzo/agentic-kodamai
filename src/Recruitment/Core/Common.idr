@@ -46,7 +46,7 @@ validContext c = if nonBlank c.actor then Right () else Left (InvalidField "acto
 
 public export
 data Event = DraftCreated | DraftUpdated | Submitted | ApprovedEvent | DeclinedEvent | HeldEvent
-           | Revised | AdvertCreated | ApplicationScored | Hired
+           | Revised | AdvertCreated | ApplicationScored | ApplicationReviewed | Hired
 
 public export
 Show Event where
@@ -59,6 +59,7 @@ Show Event where
   show Revised = "revised"
   show AdvertCreated = "advert-created"
   show ApplicationScored = "application-scored"
+  show ApplicationReviewed = "application-reviewed"
   show Hired = "hired"
 
 ||| The event kind is part of the response type. Actor/time authenticity is external.

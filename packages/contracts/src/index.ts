@@ -143,12 +143,15 @@ export interface OpenAdvert {
   questions: Array<{ questionId: number; prompt: string }>;
   skills: Array<{ skillId: number; keyword: string }>;
   applied: boolean;
+  /** Days an application is kept before it is anonymised automatically. */
+  retentionDays: number;
 }
 
 export interface ApplicationSubmission {
   candidateName: string;
   cvText: string;
-  consent: boolean;
+  /** The candidate has read the privacy notice (lawful basis: steps before a contract). */
+  acknowledgedPrivacyNotice: boolean;
   answers: Array<{ questionId: number; answer: string }>;
   years: Array<{ skillId: number; years: number }>;
 }
@@ -158,6 +161,28 @@ export interface ApplicationAcknowledgement {
   reference: number;
   applicationId: number;
   status: "received";
+}
+
+export type Disposition = "shortlist" | "reject";
+
+/** A recruiter's recorded decision. The evidence is produced by the kernel. */
+export interface ApplicationReview {
+  reference: number;
+  applicationId: number;
+  disposition: Disposition;
+  reason: string;
+  note: string;
+  evidence: AuditEntry;
+}
+
+/** Re-score the stored inputs and record a person's decision. */
+export interface AssessRequest {
+  application: IntakeRequest;
+  stored: { breakdown: ScoreBreakdown; evidence: AuditEntry };
+  reviewer: string;
+  tick: number;
+  disposition: Disposition;
+  reason: string;
 }
 
 /** Recruiter-facing application with its score workings. */
@@ -175,6 +200,10 @@ export interface ApplicationRecord {
   policyVersion: string;
   evidence: AuditEntry;
   createdAt: number;
+  review: ApplicationReview | null;
+  /** Set when personal data was removed (withdrawal, request, or retention). */
+  erasedAt: number | null;
+  erasureReason: string | null;
 }
 
 export interface WorkflowResult {

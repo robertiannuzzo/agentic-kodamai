@@ -61,12 +61,12 @@ fields role department count budget justification = do
   _ <- newDraft result
   Right result
 
--- Protocol v3. Every value is one length-prefixed frame; counts precede lists.
+-- Protocol v4. Every value is one length-prefixed frame; counts precede lists.
 protocol : String
-protocol = "recruitment-kernel-v3"
+protocol = "recruitment-kernel-v4"
 
 resultProtocol : String
-resultProtocol = "recruitment-kernel-result-v3"
+resultProtocol = "recruitment-kernel-result-v4"
 
 questionRows : Nat -> List String -> Either DomainError (List Question, List String)
 questionRows Z rest = Right ([], rest)
@@ -176,6 +176,7 @@ auditRow (name :: actor :: tick :: ref :: rev :: detail :: rest) = do
     "revised" => Right (Revised ** MkEvidence c reference revision detail)
     "advert-created" => Right (AdvertCreated ** MkEvidence c reference revision detail)
     "application-scored" => Right (ApplicationScored ** MkEvidence c reference revision detail)
+    "application-reviewed" => Right (ApplicationReviewed ** MkEvidence c reference revision detail)
     _ => Left InvalidEncoding
   Right (row, rest)
 auditRow _ = Left InvalidEncoding
@@ -240,6 +241,7 @@ current _ _ = Left InvalidEncoding
 data Request
   = TransitionRequest (Maybe CaseRecord) Command
   | IntakeRequest (a : Advert ** Intake) String
+  | AssessRequest (a : Advert ** Assessment) String
 
 transition : List String -> Either DomainError Request
 transition (presence :: rest) = do
@@ -254,22 +256,52 @@ transition (presence :: rest) = do
     _ => Left InvalidEncoding
 transition [] = Left InvalidEncoding
 
+||| The stored inputs of one application, shared by intake and assessment.
+applicationInputs : List String ->
+                    Either DomainError (Intake, String, List String)
+applicationInputs (appId :: actor :: tick :: locator :: version :: text :: more) = do
+  ident <- natural appId
+  c <- context actor tick
+  (answers, afterAnswers) <- counted answerRows more
+  (years, suffix) <- counted yearRows afterAnswers
+  Right (MkIntake c (MkRawApplication ident (MkCVInput locator version) answers years), text, suffix)
+applicationInputs _ = Left InvalidEncoding
+
+advertOf : CaseRecord -> Either DomainError Advert
+advertOf row = case row.stage of
+  Advertising a => Right a
+  _ => Left WrongStage
+
 intake : List String -> Either DomainError Request
 intake values = do
   (row, rest) <- caseRecord values
-  case rest of
-    appId :: actor :: tick :: locator :: version :: text :: more => do
-      ident <- natural appId
-      c <- context actor tick
-      (answers, afterAnswers) <- counted answerRows more
-      (years, suffix) <- counted yearRows afterAnswers
-      if null suffix then Right () else Left InvalidEncoding
-      case row.stage of
-        Advertising a =>
-          Right (IntakeRequest
-            (a ** MkIntake c (MkRawApplication ident (MkCVInput locator version) answers years))
-            text)
-        _ => Left WrongStage
+  (application, text, suffix) <- applicationInputs rest
+  if null suffix then Right () else Left InvalidEncoding
+  a <- advertOf row
+  Right (IntakeRequest (a ** application) text)
+
+disposition : String -> String -> Either DomainError Disposition
+disposition "shortlist" _ = Right Shortlist
+disposition "reject" reason = Right (Reject reason)
+disposition _ _ = Left InvalidEncoding
+
+assess : List String -> Either DomainError Request
+assess values = do
+  (row, rest) <- caseRecord values
+  (application, text, afterInputs) <- applicationInputs rest
+  case afterInputs of
+    [keywords, experience, screening, completeness, scorer, scoredAt, ref, rev, detail,
+     reviewer, reviewedAt, choice, reason] => do
+      b <- [| MkBreakdown (natural keywords) (natural experience) (natural screening)
+                          (natural completeness) |]
+      scoring <- context scorer scoredAt
+      reference <- natural ref
+      revision <- natural rev
+      reviewing <- context reviewer reviewedAt
+      d <- disposition choice reason
+      a <- advertOf row
+      let stored = MkStoredReceipt b (MkEvidence scoring reference revision detail)
+      Right (AssessRequest (a ** MkAssessment application stored reviewing d) text)
     _ => Left InvalidEncoding
 
 decodeRequest : String -> Either DomainError Request
@@ -282,6 +314,7 @@ decodeRequest input = do
       case rest of
         "transition" :: payload => transition payload
         "intake" :: payload => intake payload
+        "assess" :: payload => assess payload
         _ => Left InvalidEncoding
 
 evidenceFields : AuditRow -> List String
@@ -335,6 +368,19 @@ receiptFields receipt =
   , ev.detail
   ]
 
+outcomeFields : ReviewOutcome s -> List String
+outcomeFields outcome =
+  let ev = outcomeEvidence outcome in
+  [ case outcome of
+      Advanced _ => "shortlist"
+      NotAdvanced _ => "reject"
+  , ev.context.actor
+  , show ev.context.tick
+  , show ev.reference
+  , show ev.revision
+  , ev.detail
+  ]
+
 failure : DomainError -> String
 failure err = encodeFields [resultProtocol, "error", show err]
 
@@ -351,9 +397,13 @@ respond input = case decodeRequest input of
       Left err => failure err
       Right next => encodeFields ([resultProtocol, "case"] ++ caseFields next.row)
   Right (IntakeRequest (a ** i) text) =>
-    case run (kernelAgent (storedDocument i.raw.cv text)) (Right (a ** i)) of
+    case run (kernelAgent (storedDocument i.raw.cv text)) (Right (Left (a ** i))) of
       Left err => failure err
       Right receipt => encodeFields ([resultProtocol, "receipt"] ++ receiptFields receipt)
+  Right (AssessRequest (a ** request) text) =>
+    case run (kernelAgent (storedDocument request.intake.raw.cv text)) (Right (Right (a ** request))) of
+      Left err => failure err
+      Right (_ ** outcome) => encodeFields ([resultProtocol, "review"] ++ outcomeFields outcome)
 
 covering
 main : IO ()

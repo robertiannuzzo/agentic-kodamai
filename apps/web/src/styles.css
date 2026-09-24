@@ -860,6 +860,88 @@ label.checkbox input {
   width: 220px;
 }
 
+/* Slice 2.1: decisions, erasure and privacy */
+
+.review-controls,
+.erase-control,
+.decision {
+  border-top: 1px solid #e8ebe6;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.decision p,
+.erase-control p {
+  margin: 0;
+}
+
+.decision small,
+.erase-control p,
+.erased-line {
+  color: #6b766f;
+  font-size: 13px;
+}
+
+.erased-line {
+  background: #f4f5f2;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.inline-error {
+  color: #973e3e;
+  font-size: 14px;
+}
+
+.link-button {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  color: #973e3e;
+  cursor: pointer;
+  font-size: 13px;
+  margin: 0 16px 16px;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.button-row button.danger,
+.review-controls button.danger,
+.erase-control button.danger {
+  color: #973e3e;
+}
+
+.privacy-notice {
+  background: #f4f7ef;
+  border: 1px solid #d3ddca;
+  border-radius: 10px;
+  padding: 4px 16px;
+}
+
+.privacy-notice h2 {
+  font-size: 16px;
+  margin: 12px 0 0;
+}
+
+.privacy-notice ul {
+  color: #354139;
+  font-size: 14px;
+  line-height: 1.55;
+  padding-left: 18px;
+}
+
+.withdraw-row {
+  margin-top: 16px;
+}
+
+.withdraw-row span {
+  color: #6b766f;
+  font-size: 14px;
+}
+
 @media (max-width: 760px) {
   .topbar {
     align-items: flex-start;

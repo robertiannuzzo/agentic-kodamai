@@ -97,5 +97,11 @@
     "Mismatch between",
     "other",
     "asked"
+  ],
+  "HireWithoutShortlist.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "other",
+    "chosen"
   ]
 }

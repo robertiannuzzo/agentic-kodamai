@@ -184,6 +184,85 @@ const migrations: readonly Migration[] = [
       CREATE TRIGGER application_experience_immutable_delete BEFORE DELETE ON application_experience
         BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
     `
+  },
+  {
+    version: 5,
+    name: "reviews-erasure-and-privacy-notice",
+    sql: `
+      -- Recruitment relies on steps before a contract, not consent: record that
+      -- the privacy notice was acknowledged.
+      ALTER TABLE applications RENAME COLUMN consented_at TO notice_acknowledged_at;
+      ALTER TABLE applications ADD COLUMN erased_at INTEGER;
+      ALTER TABLE applications ADD COLUMN erasure_reason TEXT;
+      CREATE INDEX applications_retention ON applications (erased_at, created_at);
+
+      CREATE TABLE application_reviews (
+        reference INTEGER NOT NULL,
+        application_id INTEGER NOT NULL,
+        disposition TEXT NOT NULL CHECK (disposition IN ('shortlist', 'reject')),
+        reason TEXT NOT NULL,
+        note TEXT NOT NULL,
+        reviewer TEXT NOT NULL,
+        tick INTEGER NOT NULL,
+        revision INTEGER NOT NULL,
+        detail TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (reference, application_id),
+        FOREIGN KEY (reference, application_id) REFERENCES applications(reference, application_id)
+      );
+
+      -- Scores and evidence stay immutable. The only permitted change is one
+      -- erasure: personal fields are cleared and erased_at is set, once.
+      DROP TRIGGER applications_immutable_update;
+      CREATE TRIGGER applications_erasure_only BEFORE UPDATE ON applications
+        WHEN OLD.erased_at IS NOT NULL
+          OR NEW.erased_at IS NULL
+          OR NEW.erasure_reason IS NULL
+          OR NEW.candidate_name <> 'Erased candidate'
+          OR NEW.cv_text <> ''
+          OR NEW.cv_version <> 'erased'
+          OR NEW.candidate_actor NOT LIKE 'erased:%'
+          OR NEW.reference IS NOT OLD.reference
+          OR NEW.application_id IS NOT OLD.application_id
+          OR NEW.tenant_id IS NOT OLD.tenant_id
+          OR NEW.cv_locator IS NOT OLD.cv_locator
+          OR NEW.notice_acknowledged_at IS NOT OLD.notice_acknowledged_at
+          OR NEW.keywords IS NOT OLD.keywords
+          OR NEW.experience IS NOT OLD.experience
+          OR NEW.screening IS NOT OLD.screening
+          OR NEW.completeness IS NOT OLD.completeness
+          OR NEW.total IS NOT OLD.total
+          OR NEW.policy_version IS NOT OLD.policy_version
+          OR NEW.evidence_actor IS NOT OLD.evidence_actor
+          OR NEW.evidence_tick IS NOT OLD.evidence_tick
+          OR NEW.evidence_revision IS NOT OLD.evidence_revision
+          OR NEW.evidence_detail IS NOT OLD.evidence_detail
+          OR NEW.created_at IS NOT OLD.created_at
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+
+      DROP TRIGGER application_answers_immutable_update;
+      CREATE TRIGGER application_answers_erasure_only BEFORE UPDATE ON application_answers
+        WHEN NEW.answer <> ''
+          OR NEW.question_id IS NOT OLD.question_id
+          OR NEW.ordinal IS NOT OLD.ordinal
+          OR (SELECT erased_at FROM applications
+              WHERE applications.reference = OLD.reference
+                AND applications.application_id = OLD.application_id) IS NULL
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+
+      CREATE TRIGGER application_reviews_erasure_only BEFORE UPDATE ON application_reviews
+        WHEN NEW.reason <> '' OR NEW.note <> ''
+          OR NEW.disposition IS NOT OLD.disposition
+          OR NEW.reviewer IS NOT OLD.reviewer
+          OR NEW.tick IS NOT OLD.tick
+          OR NEW.detail IS NOT OLD.detail
+          OR (SELECT erased_at FROM applications
+              WHERE applications.reference = OLD.reference
+                AND applications.application_id = OLD.application_id) IS NULL
+        BEGIN SELECT RAISE(ABORT, 'review-immutable'); END;
+      CREATE TRIGGER application_reviews_immutable_delete BEFORE DELETE ON application_reviews
+        BEGIN SELECT RAISE(ABORT, 'review-immutable'); END;
+    `
   }
 ];
 

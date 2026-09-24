@@ -7,6 +7,7 @@ import type {
   AdvertSkill,
   ApiError,
   ApplicationAcknowledgement,
+  ApplicationReview,
   ApplicationSubmission,
   DemoRole,
   RequisitionCase,
@@ -48,12 +49,48 @@ export interface ApplicationOptions {
   workflowExecutable?: string;
   webRoot?: string;
   log?: (record: Record<string, string | number>) => void;
+  /** Applications are anonymised this many days after they are received. */
+  retentionDays?: number;
+  /** Retries are deduplicated within this window (Stripe uses 24 hours). */
+  idempotencyTtlMs?: number;
+  /** How often retention and idempotency maintenance runs; 0 disables the timer. */
+  maintenanceIntervalMs?: number;
+  /** Public application endpoint limits per candidate and per client address. */
+  applyRateLimit?: { perCandidate: number; perAddress: number; windowMs: number };
 }
 
 export interface Application {
   server: Server;
   store: RecruitmentStore;
+  /** Run retention and idempotency maintenance now. */
+  maintain(now?: number): { purged: number; pruned: number };
   close(): Promise<void>;
+}
+
+const day = 24 * 60 * 60 * 1000;
+
+/** A small fixed-window limiter; state is per process, which suits one instance. */
+class RateLimiter {
+  private readonly hits = new Map<string, number[]>();
+
+  constructor(
+    private readonly limit: number,
+    private readonly windowMs: number
+  ) {}
+
+  allow(key: string, now: number): boolean {
+    const recent = (this.hits.get(key) ?? []).filter((time) => time > now - this.windowMs);
+    const allowed = recent.length < this.limit;
+    if (allowed) recent.push(now);
+    this.hits.set(key, recent);
+    return allowed;
+  }
+
+  prune(now: number): void {
+    for (const [key, times] of this.hits) {
+      if (times.every((time) => time <= now - this.windowMs)) this.hits.delete(key);
+    }
+  }
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -194,11 +231,11 @@ function advertSchema(input: Record<string, unknown>): { questions: AdvertQuesti
 }
 
 function submission(input: Record<string, unknown>): ApplicationSubmission {
-  if (input.consent !== true) throw new HttpError(400, "consent-required");
+  if (input.acknowledgedPrivacyNotice !== true) throw new HttpError(400, "privacy-notice-required");
   return {
     candidateName: boundedText(input.candidateName, "candidate-name", 200),
     cvText: boundedText(input.cvText, "cv-text", 50_000),
-    consent: true,
+    acknowledgedPrivacyNotice: true,
     answers: list(input.answers, "answers", 20).map((value) => {
       const a = record(value, "answer");
       return { questionId: integer(a.questionId, "question-id"), answer: text(a.answer, "answer") };
@@ -212,6 +249,22 @@ function submission(input: Record<string, unknown>): ApplicationSubmission {
 
 function advertApplicationsReference(pathname: string): number | null {
   const match = /^\/api\/adverts\/(\d+)\/applications$/u.exec(pathname);
+  if (match?.[1] === undefined) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function applicationAction(pathname: string): { reference: number; applicationId: number; action: string } | null {
+  const match = /^\/api\/requisitions\/(\d+)\/applications\/(\d+)\/(review|erase)$/u.exec(pathname);
+  if (match?.[1] === undefined || match[2] === undefined || match[3] === undefined) return null;
+  const reference = Number(match[1]);
+  const applicationId = Number(match[2]);
+  if (!Number.isSafeInteger(reference) || !Number.isSafeInteger(applicationId)) return null;
+  return { reference, applicationId, action: match[3] };
+}
+
+function withdrawalReference(pathname: string): number | null {
+  const match = /^\/api\/adverts\/(\d+)\/applications\/mine$/u.exec(pathname);
   if (match?.[1] === undefined) return null;
   const value = Number(match[1]);
   return Number.isSafeInteger(value) ? value : null;
@@ -246,7 +299,9 @@ function mapError(error: unknown): HttpError {
       error.code === "audit-history-mismatch" ||
       error.code === "idempotency-key-conflict" ||
       error.code === "already-applied" ||
-      error.code === "advert-closed"
+      error.code === "advert-closed" ||
+      error.code === "already-reviewed" ||
+      error.code === "application-erased"
     ) {
       return new HttpError(409, error.code);
     }
@@ -310,6 +365,24 @@ function serveWeb(pathname: string, webRoot: string, response: ServerResponse): 
 export async function createApplication(options: ApplicationOptions): Promise<Application> {
   const store = new RecruitmentStore(options.databasePath);
   const workflow = new WorkflowClient(options.workflowExecutable);
+  const retentionDays = options.retentionDays ?? 180;
+  const idempotencyTtlMs = options.idempotencyTtlMs ?? day;
+  const limits = options.applyRateLimit ?? { perCandidate: 5, perAddress: 30, windowMs: 10 * 60 * 1000 };
+  const candidateLimiter = new RateLimiter(limits.perCandidate, limits.windowMs);
+  const addressLimiter = new RateLimiter(limits.perAddress, limits.windowMs);
+
+  function maintain(now = Date.now()): { purged: number; pruned: number } {
+    const purged = store.purgeExpiredApplications(now, retentionDays * day);
+    const pruned = store.pruneIdempotency(now, idempotencyTtlMs);
+    candidateLimiter.prune(now);
+    addressLimiter.prune(now);
+    if (purged > 0 || pruned > 0) options.log?.({ event: "maintenance", purged, pruned });
+    return { purged, pruned };
+  }
+  maintain();
+  const interval = options.maintenanceIntervalMs ?? 60 * 60 * 1000;
+  const timer = interval > 0 ? setInterval(() => maintain(), interval) : null;
+  timer?.unref();
 
   let mutationTail: Promise<void> = Promise.resolve();
   function serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -353,6 +426,7 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
    * application and scores it. Only then is anything persisted.
    */
   async function apply(
+    request: IncomingMessage,
     user: Identity,
     key: string,
     reference: number,
@@ -366,6 +440,14 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       requestFingerprint: fingerprint(`apply:${reference}`, input)
     };
     const application = submission(input);
+    const now = Date.now();
+    const address = request.socket.remoteAddress ?? "unknown";
+    if (
+      !candidateLimiter.allow(`${user.tenantId}:${user.actor}`, now) ||
+      !addressLimiter.allow(address, now)
+    ) {
+      throw new HttpError(429, "rate-limited");
+    }
     return serialize(async () => {
       const prior = store.applicationIdempotencyResult(context);
       if (prior !== null) return prior;
@@ -388,6 +470,61 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         years: application.years
       });
       return store.commitApplication({ reference, submission: application, cv, receipt }, context);
+    });
+  }
+
+  /**
+   * A recruiter's decision. The kernel's assess branch re-derives the score from
+   * the stored inputs through the intake chain, refuses if it no longer matches
+   * what was stored, and only then produces review evidence indexed by it.
+   */
+  async function reviewApplication(
+    user: Identity,
+    key: string,
+    reference: number,
+    applicationId: number,
+    input: Record<string, unknown>
+  ): Promise<ApplicationReview> {
+    const disposition = text(input.disposition, "disposition");
+    if (disposition !== "shortlist" && disposition !== "reject") throw new HttpError(400, "invalid-disposition");
+    const reason = text(input.reason ?? "", "reason");
+    const note = text(input.note ?? "", "note");
+    if (Array.from(reason).length > 2000 || Array.from(note).length > 5000) throw new HttpError(400, "invalid-note");
+    const operation = `review-application:${reference}:${applicationId}`;
+    const context: CommitContext = {
+      tenantId: user.tenantId,
+      actor: user.actor,
+      idempotencyKey: key,
+      operation,
+      requestFingerprint: fingerprint(operation, input)
+    };
+    return serialize(async () => {
+      const prior = store.applicationReviewIdempotencyResult(context);
+      if (prior !== null) return prior;
+      const advertised = accessible(user, reference, false);
+      const stored = store.storedApplication(user.tenantId, reference, applicationId);
+      if (stored === null) throw new HttpError(404, "not-found");
+      if (stored.erasedAt !== null) throw new HttpError(409, "application-erased");
+      if (stored.reviewed) throw new HttpError(409, "already-reviewed");
+      const outcome = await workflow.assess(workflowCase(advertised), {
+        application: {
+          applicationId,
+          actor: stored.evidence.actor,
+          tick: stored.evidence.tick,
+          cv: stored.cv,
+          answers: stored.answers,
+          years: stored.years
+        },
+        stored: { breakdown: stored.breakdown, evidence: stored.evidence },
+        reviewer: user.actor,
+        tick: Date.now(),
+        disposition,
+        reason
+      });
+      return store.commitReview(
+        { reference, applicationId, disposition: outcome.disposition, reason, note, evidence: outcome.evidence },
+        context
+      );
     });
   }
 
@@ -433,7 +570,7 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       const user = identity(request);
 
       if (request.method === "GET" && url.pathname === "/api/adverts") {
-        json(response, 200, store.openAdverts(user.tenantId, user.actor));
+        json(response, 200, store.openAdverts(user.tenantId, user.actor, retentionDays));
         return;
       }
 
@@ -442,12 +579,44 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         requireRole(user.role, "candidate");
         const input = await body(request);
         const key = idempotencyKey(request);
-        const result = await apply(user, key, applyReference, input);
+        const result = await apply(request, user, key, applyReference, input);
         json(response, 201, result);
         return;
       }
 
+      const withdrawal = withdrawalReference(url.pathname);
+      if (request.method === "DELETE" && withdrawal !== null) {
+        requireRole(user.role, "candidate");
+        const erased = await serialize(async () =>
+          store.eraseCandidateApplication(user.tenantId, withdrawal, user.actor, Date.now())
+        );
+        if (!erased) throw new HttpError(404, "not-found");
+        response.writeHead(204, { "cache-control": "no-store" });
+        response.end();
+        return;
+      }
+
       requireStaff(user.role);
+
+      const target = applicationAction(url.pathname);
+      if (request.method === "POST" && target !== null) {
+        requireRole(user.role, "recruiter");
+        const input = await body(request);
+        if (target.action === "review") {
+          const key = idempotencyKey(request);
+          json(response, 200, await reviewApplication(user, key, target.reference, target.applicationId, input));
+          return;
+        }
+        accessible(user, target.reference, false);
+        const reason = boundedText(input.reason, "reason", 500);
+        const erased = await serialize(async () =>
+          store.eraseApplication(user.tenantId, target.reference, target.applicationId, reason, Date.now())
+        );
+        if (!erased) throw new HttpError(404, "not-found");
+        response.writeHead(204, { "cache-control": "no-store" });
+        response.end();
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/api/requisitions") {
         json(response, 200, store.list(user.tenantId, user.role === "requester" ? user.actor : undefined));
         return;
@@ -623,6 +792,7 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
     } catch (error) {
       const failure = mapError(error);
       if (failure.status === 500) console.error(error);
+      if (failure.status === 429) response.setHeader("retry-after", String(Math.ceil(limits.windowMs / 1000)));
       json(response, failure.status, { error: failure.code } satisfies ApiError);
     }
   });
@@ -630,7 +800,9 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
   return {
     server,
     store,
+    maintain,
     async close(): Promise<void> {
+      if (timer !== null) clearInterval(timer);
       await new Promise<void>((resolveClose, reject) => {
         server.close((error) => (error === undefined ? resolveClose() : reject(error)));
       });

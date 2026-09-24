@@ -199,13 +199,13 @@ public export
 recruitmentAgent : Agent RecruitmentC
 recruitmentAgent = compose recruitmentHandler spineAgent
 
-||| Stage 2's link: hire consumes a score and must return the employee together
-||| with proof of the application it came from.
+||| Stage 2's link: hire consumes a shortlisted score and must return the
+||| employee together with proof of the application it came from.
 public export
 HireC : Cont
-HireC = MkCont (a : Advert ** (Score a, Context, Starter))
-  (\(a ** (s, _, _)) => Either DomainError (e : Employee ** provenanceOf e = (a ** scoredApplication s)))
+HireC = MkCont (a : Advert ** (s : Score a ** (Shortlisted s, Context, Starter)))
+  (\(a ** (s ** _)) => Either DomainError (e : Employee ** provenanceOf e = (a ** scoredApplication s)))
 
 public export
 hireAgent : Agent HireC
-hireAgent = answers (\(a ** (s, c, starter)) => hire a s c starter)
+hireAgent = answers (\(a ** (s ** (shortlisted, c, starter))) => hire a s shortlisted c starter)
