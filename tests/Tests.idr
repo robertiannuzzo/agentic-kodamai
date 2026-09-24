@@ -3,7 +3,7 @@ module Tests
 import Recruitment.Example
 import ContainerTests
 import Recruitment.Adapters.Codec
-import Recruitment.Adapters.Transition
+import Recruitment.Adapters.Kernel
 import Data.List
 import System
 
@@ -274,31 +274,31 @@ dutyAndReplayTests =
   , ("replay rebuilds approved stage", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
        (approved, _) <- review caseRepository row.reference 0 reviewer Approve state
-       stage <- restoreStage row.reference exampleFields approved.history
+       stage <- restoreStage row.reference exampleFields Nothing approved.history
        Right (isAccepted stage)))
   , ("replay rebuilds reworked revision", ok (do
        (row, state) <- start caseRepository context exampleFields emptyCases
        (held, state) <- review caseRepository row.reference 0 reviewer (Hold "Smaller") state
        let revisedFields = MkFields "R" "D" 1 1 "Revised"
        (revised, _) <- resubmit caseRepository row.reference held.generation context revisedFields state
-       stage <- restoreStage row.reference revisedFields revised.history
+       stage <- restoreStage row.reference revisedFields Nothing revised.history
        case stage of
          AwaitingReview r _ => Right (r.revision == 1)
          _ => Right False))
   , ("replay refuses self-approval history", fails "invalid-history"
-       (restoreStage 1 exampleFields [submitted 0, approvedBy context 0]))
+       (restoreStage 1 exampleFields Nothing [submitted 0, approvedBy context 0]))
   , ("replay refuses approval without submission", fails "invalid-history"
-       (restoreStage 1 exampleFields [(DraftCreated ** MkEvidence context 1 0 exampleFields.justification),
+       (restoreStage 1 exampleFields Nothing [(DraftCreated ** MkEvidence context 1 0 exampleFields.justification),
                                        approvedBy reviewer 0]))
   , ("replay refuses approval of another revision", fails "invalid-history"
-       (restoreStage 1 exampleFields [submitted 0, approvedBy reviewer 1]))
+       (restoreStage 1 exampleFields Nothing [submitted 0, approvedBy reviewer 1]))
   , ("replay refuses facts about another requisition", fails "invalid-history"
-       (restoreStage 2 exampleFields [submitted 0, approvedBy reviewer 0]))
+       (restoreStage 2 exampleFields Nothing [submitted 0, approvedBy reviewer 0]))
   , ("replay refuses fields that were never submitted", fails "invalid-history"
-       (restoreStage 1 (MkFields "R" "D" 1 1 "Swapped") [submitted 0, approvedBy reviewer 0]))
-  , ("replay refuses empty history", fails "invalid-history" (restoreStage 1 exampleFields []))
+       (restoreStage 1 (MkFields "R" "D" 1 1 "Swapped") Nothing [submitted 0, approvedBy reviewer 0]))
+  , ("replay refuses empty history", fails "invalid-history" (restoreStage 1 exampleFields Nothing []))
   , ("replay accepts legitimate approval", ok (do
-       stage <- restoreStage 1 exampleFields [submitted 0, approvedBy reviewer 0]
+       stage <- restoreStage 1 exampleFields Nothing [submitted 0, approvedBy reviewer 0]
        Right (isAccepted stage)))
   ]
 
@@ -336,10 +336,87 @@ hireTests =
        Right (fails "invalid-field:legal-name" (hire a receipt.score reviewer (MkStarter " " 20)))))
   ]
 
+publishedCase : Either DomainError CaseRecord
+publishedCase = do
+  (row, state) <- start caseRepository context exampleFields emptyCases
+  (approved, state) <- review caseRepository row.reference 0 reviewer Approve state
+  (published, _) <- advertise caseRepository row.reference approved.generation
+                      (MkContext "recruiter" 12) exampleQuestions exampleSkills state
+  Right published
+
+cvLeaf : Agent ExtractionC
+cvLeaf = storedDocument exampleCV "Idris and SQL experience"
+
+isAdvertising : Stage -> Bool
+isAdvertising (Advertising a) =
+  map (.prompt) (questionsOf a) == map (.prompt) exampleQuestions &&
+  map (.weight) (skillsOf a) == map (.weight) exampleSkills
+isAdvertising _ = False
+
+slice2Tests : List (String, Bool)
+slice2Tests =
+  [ ("published advert restored by replay and re-publication", ok (do
+       published <- publishedCase
+       stage <- restoreStage published.reference exampleFields
+                  (Just (MkStoredAdvert exampleQuestions exampleSkills)) published.history
+       Right (isAdvertising stage)))
+  , ("publication evidence fingerprints the schema", ok (do
+       published <- publishedCase
+       case published.stage of
+         Advertising a => Right (isInfixOf (unpack "schema:") (unpack (advertEvidence a).detail))
+         _ => Right False))
+  , ("tampered stored question refused", ok (do
+       published <- publishedCase
+       let changed = [MkQuestion 1 "Can you work in this time zone?" "no",
+                      MkQuestion 2 "Do you use typed programming?" "yes"]
+       Right (fails "invalid-history" (restoreStage published.reference exampleFields
+               (Just (MkStoredAdvert changed exampleSkills)) published.history))))
+  , ("tampered stored weight refused", ok (do
+       published <- publishedCase
+       Right (fails "invalid-history" (restoreStage published.reference exampleFields
+               (Just (MkStoredAdvert exampleQuestions [MkSkill 1 "idris" 9 5, MkSkill 2 "sql" 2 3]))
+               published.history))))
+  , ("stored schema without publication refused", ok (do
+       published <- publishedCase
+       Right (fails "invalid-history" (restoreStage published.reference exampleFields
+               (Just (MkStoredAdvert exampleQuestions exampleSkills))
+               (take 2 published.history)))))
+  , ("publication without approval refused on replay", fails "invalid-history"
+       (restoreStage 1 exampleFields (Just (MkStoredAdvert exampleQuestions exampleSkills))
+         [submitted 0, (AdvertCreated ** MkEvidence reviewer 1 0 "advert:1")]))
+  , ("transition agent publishes an approved requisition", ok (do
+       created <- run transitionAgent (Nothing, CreateDraft 5 context exampleFields)
+       sent <- run transitionAgent (Just created.row, SubmitDraft 5 0 context)
+       decided <- run transitionAgent (Just sent.row, Review 5 1 reviewer Approve)
+       published <- run transitionAgent
+                      (Just decided.row, Publish 5 2 reviewer exampleQuestions exampleSkills)
+       Right (published.row.generation == 3 && isAdvertising published.row.stage)))
+  , ("transition agent refuses publishing before approval", ok (do
+       created <- run transitionAgent (Nothing, CreateDraft 5 context exampleFields)
+       Right (fails "wrong-stage"
+         (run transitionAgent (Just created.row, Publish 5 0 context exampleQuestions exampleSkills)))))
+  , ("intake chain scores through validate, extract, application and score", withAdvert (\a => do
+       receipt <- run (intakeAgent cvLeaf) (a ** MkIntake context exampleRaw)
+       Right (totalScore receipt.score == 46 && breakdown receipt.score == MkBreakdown 5 18 20 3 &&
+              receipt.evidence.detail == "advert:1;application:1;policy:recruitment-score-v1")))
+  , ("kernel routes an intake to the intake branch", withAdvert (\a => do
+       receipt <- run (kernelAgent cvLeaf) (Right (a ** MkIntake context exampleRaw))
+       Right (totalScore receipt.score == 46)))
+  , ("intake validates before invoking the leaf", withAdvert (\a => Right (fails "answers-do-not-match-questions"
+       (run (intakeAgent (extractionAgent failingExtractor))
+         (a ** MkIntake context (MkRawApplication 1 exampleCV [] exampleRaw.years))))))
+  , ("intake leaf answers only for the stored document version", withAdvert (\a => Right (fails "cv-extraction-failed"
+       (run (intakeAgent cvLeaf)
+         (a ** MkIntake context (MkRawApplication 1 (MkCVInput exampleCV.locator "v2")
+                                  exampleRaw.answers exampleRaw.years))))))
+  , ("intake refuses blank applicant", withAdvert (\a => Right (fails "invalid-field:actor"
+       (run (intakeAgent cvLeaf) (a ** MkIntake (MkContext " " 1) exampleRaw)))))
+  ]
+
 covering
 main : IO ()
 main = do
-  let tests = containerTests ++ workflowTests ++ dutyAndReplayTests ++ transitionTests ++ hireTests ++ schemaTests ++ intakeTests ++ codecTests ++ additionalTests ++ map generatedTest [0..100]
+  let tests = containerTests ++ workflowTests ++ dutyAndReplayTests ++ transitionTests ++ hireTests ++ slice2Tests ++ schemaTests ++ intakeTests ++ codecTests ++ additionalTests ++ map generatedTest [0..100]
   traverse_ (\(name, passed) => putStrLn ((if passed then "PASS " else "FAIL ") ++ name)) tests
   let failures = filter (\(_, passed) => not passed) tests
   putStrLn (show (length tests) ++ " checks, " ++ show (length failures) ++ " failures")

@@ -3,7 +3,11 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import type {
+  AdvertQuestion,
+  AdvertSkill,
   ApiError,
+  ApplicationAcknowledgement,
+  ApplicationSubmission,
   DemoRole,
   RequisitionCase,
   RequisitionFields,
@@ -71,7 +75,9 @@ function identity(request: IncomingMessage): Identity {
   const actor = header(request, "x-demo-actor", "identity-required");
   const tenantId = header(request, "x-demo-tenant", "tenant-required");
   const role = request.headers["x-demo-role"];
-  if (role !== "requester" && role !== "approver") throw new HttpError(401, "role-required");
+  if (role !== "requester" && role !== "approver" && role !== "recruiter" && role !== "candidate") {
+    throw new HttpError(401, "role-required");
+  }
   return { actor, role, tenantId };
 }
 
@@ -90,6 +96,10 @@ function idempotencyKey(request: IncomingMessage): string {
 
 function requireRole(actual: DemoRole, expected: DemoRole): void {
   if (actual !== expected) throw new HttpError(403, `${expected}-role-required`);
+}
+
+function requireStaff(actual: DemoRole): void {
+  if (actual === "candidate") throw new HttpError(403, "staff-role-required");
 }
 
 async function body(request: IncomingMessage): Promise<Record<string, unknown>> {
@@ -140,6 +150,73 @@ function fields(value: unknown): RequisitionFields {
   };
 }
 
+function boundedText(value: unknown, field: string, maximum: number): string {
+  const result = text(value, field);
+  if (result.trim() === "" || Array.from(result).length > maximum) throw new HttpError(400, `invalid-${field}`);
+  return result;
+}
+
+function list(value: unknown, field: string, maximum: number): unknown[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maximum) {
+    throw new HttpError(400, `invalid-${field}`);
+  }
+  return value;
+}
+
+function record(value: unknown, field: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HttpError(400, `invalid-${field}`);
+  }
+  return value as Record<string, unknown>;
+}
+
+/** Identifiers are assigned by position; the frozen order is part of the advert. */
+function advertSchema(input: Record<string, unknown>): { questions: AdvertQuestion[]; skills: AdvertSkill[] } {
+  return {
+    questions: list(input.questions, "questions", 20).map((value, index) => {
+      const q = record(value, "question");
+      return {
+        questionId: index + 1,
+        prompt: boundedText(q.prompt, "question", 500),
+        expected: boundedText(q.expected, "expected-answer", 200)
+      };
+    }),
+    skills: list(input.skills, "skills", 20).map((value, index) => {
+      const s = record(value, "skill");
+      return {
+        skillId: index + 1,
+        keyword: boundedText(s.keyword, "skill", 100),
+        weight: integer(s.weight, "weight"),
+        targetYears: integer(s.targetYears, "target-years")
+      };
+    })
+  };
+}
+
+function submission(input: Record<string, unknown>): ApplicationSubmission {
+  if (input.consent !== true) throw new HttpError(400, "consent-required");
+  return {
+    candidateName: boundedText(input.candidateName, "candidate-name", 200),
+    cvText: boundedText(input.cvText, "cv-text", 50_000),
+    consent: true,
+    answers: list(input.answers, "answers", 20).map((value) => {
+      const a = record(value, "answer");
+      return { questionId: integer(a.questionId, "question-id"), answer: text(a.answer, "answer") };
+    }),
+    years: list(input.years, "years", 20).map((value) => {
+      const y = record(value, "years");
+      return { skillId: integer(y.skillId, "skill-id"), years: integer(y.years, "years") };
+    })
+  };
+}
+
+function advertApplicationsReference(pathname: string): number | null {
+  const match = /^\/api\/adverts\/(\d+)\/applications$/u.exec(pathname);
+  if (match?.[1] === undefined) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
 function pathReference(pathname: string): number | null {
   const match = /^\/api\/requisitions\/(\d+)(?:\/.*)?$/u.exec(pathname);
   if (match?.[1] === undefined) return null;
@@ -167,10 +244,13 @@ function mapError(error: unknown): HttpError {
     if (
       error.code === "stale-version" ||
       error.code === "audit-history-mismatch" ||
-      error.code === "idempotency-key-conflict"
+      error.code === "idempotency-key-conflict" ||
+      error.code === "already-applied" ||
+      error.code === "advert-closed"
     ) {
       return new HttpError(409, error.code);
     }
+    if (error.code === "not-found") return new HttpError(404, error.code);
     return new HttpError(500, "internal-server-error");
   }
   const code = error instanceof WorkflowError ? error.code : "internal-server-error";
@@ -184,6 +264,9 @@ function mapError(error: unknown): HttpError {
     code === "invalid-reference" ||
     code.startsWith("invalid-schema:") ||
     code === "reason-required" ||
+    code === "answers-do-not-match-questions" ||
+    code === "experience-does-not-match-skills" ||
+    code === "invalid-cv-reference" ||
     code === "identity-required" ||
     code === "tenant-required" ||
     code === "role-required"
@@ -264,6 +347,50 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
     });
   }
 
+  /**
+   * A candidate application: the kernel's intake branch validates it, reads the
+   * stored CV through the extraction leaf, builds the advert-indexed
+   * application and scores it. Only then is anything persisted.
+   */
+  async function apply(
+    user: Identity,
+    key: string,
+    reference: number,
+    input: Record<string, unknown>
+  ): Promise<ApplicationAcknowledgement> {
+    const context: CommitContext = {
+      tenantId: user.tenantId,
+      actor: user.actor,
+      idempotencyKey: key,
+      operation: `apply:${reference}`,
+      requestFingerprint: fingerprint(`apply:${reference}`, input)
+    };
+    const application = submission(input);
+    return serialize(async () => {
+      const prior = store.applicationIdempotencyResult(context);
+      if (prior !== null) return prior;
+      const advertised = store.get(user.tenantId, reference);
+      if (advertised === null || advertised.stage !== "advertising") throw new HttpError(404, "not-found");
+      if (store.openAdverts(user.tenantId, user.actor).some((advert) => advert.reference === reference && advert.applied)) {
+        throw new HttpError(409, "already-applied");
+      }
+      const applicationId = store.allocateApplicationId(reference);
+      const cv = {
+        locator: `cv://${user.tenantId}/${reference}/${applicationId}`,
+        version: createHash("sha256").update(application.cvText).digest("hex")
+      };
+      const receipt = await workflow.intake(workflowCase(advertised), {
+        applicationId,
+        actor: user.actor,
+        tick: Date.now(),
+        cv: { ...cv, text: application.cvText },
+        answers: application.answers,
+        years: application.years
+      });
+      return store.commitApplication({ reference, submission: application, cv, receipt }, context);
+    });
+  }
+
   function accessible(user: Identity, reference: number, ownerRequired: boolean): RequisitionCase {
     const row = store.get(user.tenantId, reference);
     if (row === null) throw new HttpError(404, "not-found");
@@ -304,6 +431,23 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       }
 
       const user = identity(request);
+
+      if (request.method === "GET" && url.pathname === "/api/adverts") {
+        json(response, 200, store.openAdverts(user.tenantId, user.actor));
+        return;
+      }
+
+      const applyReference = advertApplicationsReference(url.pathname);
+      if (request.method === "POST" && applyReference !== null) {
+        requireRole(user.role, "candidate");
+        const input = await body(request);
+        const key = idempotencyKey(request);
+        const result = await apply(user, key, applyReference, input);
+        json(response, 201, result);
+        return;
+      }
+
+      requireStaff(user.role);
       if (request.method === "GET" && url.pathname === "/api/requisitions") {
         json(response, 200, store.list(user.tenantId, user.role === "requester" ? user.actor : undefined));
         return;
@@ -434,6 +578,44 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
           };
         });
         json(response, 200, result);
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        reference !== null &&
+        url.pathname === `/api/requisitions/${reference}/advert`
+      ) {
+        requireRole(user.role, "recruiter");
+        const input = await body(request);
+        const key = idempotencyKey(request);
+        const schema = advertSchema(input);
+        const result = await mutate(user, key, "publish", input, () => {
+          const current = accessible(user, reference, false);
+          return {
+            current,
+            command: {
+              kind: "publish",
+              reference,
+              generation: integer(input.generation, "generation"),
+              actor: user.actor,
+              tick: Date.now(),
+              ...schema
+            }
+          };
+        });
+        json(response, 200, result);
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        reference !== null &&
+        url.pathname === `/api/requisitions/${reference}/applications`
+      ) {
+        requireRole(user.role, "recruiter");
+        accessible(user, reference, false);
+        json(response, 200, store.applications(user.tenantId, reference));
         return;
       }
 

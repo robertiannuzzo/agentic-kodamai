@@ -85,5 +85,17 @@
     "right hand side of bad",
     "Can't solve constraint",
     "reference"
+  ],
+  "ReceiptForOtherAdvert.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "other",
+    "asked"
+  ],
+  "WrongDocument.idr": [
+    "right hand side of bad",
+    "Mismatch between",
+    "other",
+    "asked"
   ]
 }

@@ -14,6 +14,7 @@ data Command
   | SubmitDraft Nat Nat Context
   | Review Nat Nat Context Decision
   | Resubmit Nat Nat Context Fields
+  | Publish Nat Nat Context (List Question) (List Skill)
 
 ||| The requisition a command targets.
 public export
@@ -23,6 +24,7 @@ target (UpdateDraft ref _ _ _) = ref
 target (SubmitDraft ref _ _) = ref
 target (Review ref _ _ _) = ref
 target (Resubmit ref _ _ _) = ref
+target (Publish ref _ _ _ _) = ref
 
 ||| The generation the aggregate must reach if the command succeeds.
 public export
@@ -32,6 +34,7 @@ after (UpdateDraft _ expected _ _) = S expected
 after (SubmitDraft _ expected _) = S expected
 after (Review _ expected _ _) = S expected
 after (Resubmit _ expected _ _) = S expected
+after (Publish _ expected _ _ _) = S expected
 
 ||| The next state of *this* requisition, exactly one generation on. The reply
 ||| type depends on the prompt, so a handler cannot answer about another case
@@ -82,6 +85,12 @@ ResubmitC : Cont
 ResubmitC = MkCont (CaseRecord, Nat, Nat, Context, Fields)
   (\(_, ref, expected, _, _) => Answer ref (S expected))
 
+||| Publishing freezes the advert schema on the approved requisition.
+public export
+PublishC : Cont
+PublishC = MkCont (CaseRecord, Nat, Nat, Context, List Question, List Skill)
+  (\(_, ref, expected, _, _, _) => Answer ref (S expected))
+
 ||| Routing failures (no aggregate, or one where none may exist) answered directly.
 public export
 RefuseC : Cont
@@ -90,7 +99,7 @@ RefuseC = MkCont (Nat, Nat, DomainError) (\(ref, generation, _) => Answer ref ge
 ||| The worker's interface: exactly one branch is asked, so it is a sum.
 public export
 WorkerC : Cont
-WorkerC = Sum RefuseC (Sum CreateC (Sum UpdateC (Sum SubmitC (Sum ReviewC ResubmitC))))
+WorkerC = Sum RefuseC (Sum CreateC (Sum UpdateC (Sum SubmitC (Sum ReviewC (Sum ResubmitC PublishC)))))
 
 ||| Load the single-aggregate repository, check the path reference, and run a use case.
 existing : {ref : Nat} -> CaseRecord -> (generation : Nat) ->
@@ -130,6 +139,11 @@ resubmitAgent = answers (\(row, ref, expected, c, f) =>
   existing row (S expected) (\repo => resubmit repo ref expected c f))
 
 public export
+publishAgent : Agent PublishC
+publishAgent = answers (\(row, ref, expected, c, questions, skills) =>
+  existing row (S expected) (\repo => advertise repo ref expected c questions skills))
+
+public export
 refuseAgent : Agent RefuseC
 refuseAgent = answers (\(_, _, err) => Left err)
 
@@ -137,7 +151,7 @@ refuseAgent = answers (\(_, _, err) => Left err)
 public export
 workerAgent : Agent WorkerC
 workerAgent = sumAgent refuseAgent (sumAgent createAgent (sumAgent updateAgent
-  (sumAgent submitAgent (sumAgent reviewAgent resubmitAgent))))
+  (sumAgent submitAgent (sumAgent reviewAgent (sumAgent resubmitAgent publishAgent)))))
 
 ||| A proposed write: the persisted aggregate (if any) and the command.
 public export
@@ -156,12 +170,15 @@ route (Nothing, UpdateDraft ref expected _ _) = Left (ref, S expected, NotFound)
 route (Nothing, SubmitDraft ref expected _) = Left (ref, S expected, NotFound)
 route (Nothing, Review ref expected _ _) = Left (ref, S expected, NotFound)
 route (Nothing, Resubmit ref expected _ _) = Left (ref, S expected, NotFound)
+route (Nothing, Publish ref expected _ _ _) = Left (ref, S expected, NotFound)
 route (Just row, UpdateDraft ref expected c f) = Right (Right (Left (row, ref, expected, c, f)))
 route (Just row, SubmitDraft ref expected c) = Right (Right (Right (Left (row, ref, expected, c))))
 route (Just row, Review ref expected c d) =
   Right (Right (Right (Right (Left (row, ref, expected, c, d)))))
 route (Just row, Resubmit ref expected c f) =
-  Right (Right (Right (Right (Right (row, ref, expected, c, f)))))
+  Right (Right (Right (Right (Right (Left (row, ref, expected, c, f))))))
+route (Just row, Publish ref expected c qs ss) =
+  Right (Right (Right (Right (Right (Right (row, ref, expected, c, qs, ss))))))
 
 ||| Every branch's reply already is the reply owed, so amalgamation is the identity
 ||| on each routed case; the type checker confirms that per branch.
@@ -172,10 +189,12 @@ answerUp (Nothing, UpdateDraft _ _ _ _) reply = reply
 answerUp (Nothing, SubmitDraft _ _ _) reply = reply
 answerUp (Nothing, Review _ _ _ _) reply = reply
 answerUp (Nothing, Resubmit _ _ _ _) reply = reply
+answerUp (Nothing, Publish _ _ _ _ _) reply = reply
 answerUp (Just _, UpdateDraft _ _ _ _) reply = reply
 answerUp (Just _, SubmitDraft _ _ _) reply = reply
 answerUp (Just _, Review _ _ _ _) reply = reply
 answerUp (Just _, Resubmit _ _ _ _) reply = reply
+answerUp (Just _, Publish _ _ _ _ _) reply = reply
 
 public export
 dispatch : Handler TransitionC WorkerC

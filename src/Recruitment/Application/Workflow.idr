@@ -25,18 +25,51 @@ record CaseRecord where
   stage : Stage
   history : List AuditRow
 
+||| The persisted schema of a published advert, as stored by an adapter.
+public export
+record StoredAdvert where
+  constructor MkStoredAdvert
+  questions : List Question
+  skills : List Skill
+
+splitLast : List a -> Maybe (List a, a)
+splitLast [] = Nothing
+splitLast (x :: xs) = case splitLast xs of
+  Nothing => Just ([], x)
+  Just (front, final) => Just (x :: front, final)
+
+stageOf : Replayed -> Stage
+stageOf (InDraft values) = Drafting values
+stageOf (InReview r pending) = AwaitingReview r pending
+stageOf (InRework r held) = NeedsRework r held
+stageOf (IsApproved r approval) = Accepted r approval
+stageOf (IsDeclined r declined) = Rejected r declined
+
+sameFact : Evidence event -> Evidence event -> Bool
+sameFact x y = x.reference == y.reference && x.revision == y.revision &&
+               x.detail == y.detail && x.context.actor == y.context.actor &&
+               x.context.tick == y.context.tick
+
 ||| Rebuild a persisted stage only by replaying its complete audit trail.
-||| Published adverts are not persisted by the workflow boundary in phase 1.
+||| A published advert is rebuilt the only way an advert can exist: the trail
+||| before publication must replay to `Approved r`, and `publish` is re-run on
+||| the stored schema. The result must reproduce the stored publication fact,
+||| whose detail fingerprints the exact questions and skills.
 export
-restoreStage : (ref : Nat) -> Fields -> List AuditRow -> Either DomainError Stage
-restoreStage ref f history = do
-  replayed <- replay ref f history
-  Right (case replayed of
-    InDraft values => Drafting values
-    InReview r pending => AwaitingReview r pending
-    InRework r held => NeedsRework r held
-    IsApproved r approval => Accepted r approval
-    IsDeclined r declined => Rejected r declined)
+restoreStage : (ref : Nat) -> Fields -> Maybe StoredAdvert -> List AuditRow ->
+               Either DomainError Stage
+restoreStage ref f Nothing history = map stageOf (replay ref f history)
+restoreStage ref f (Just stored) history = case splitLast history of
+  Just (front, (AdvertCreated ** fact)) => do
+    replayed <- replay ref f front
+    case replayed of
+      IsApproved r approval => do
+        advert <- publish r approval fact.context ref stored.questions stored.skills
+        if sameFact (advertEvidence advert) fact
+          then Right (Advertising advert)
+          else Left InvalidHistory
+      _ => Left InvalidHistory
+  _ => Left InvalidHistory
 
 ||| commit compares the expected generation and persists the complete aggregate,
 ||| including its audit trail. Nothing means insert, Just n means compare-and-swap.

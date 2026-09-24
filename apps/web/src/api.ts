@@ -1,6 +1,10 @@
 import type {
   ApiError,
+  ApplicationAcknowledgement,
+  ApplicationRecord,
+  ApplicationSubmission,
   DemoRole,
+  OpenAdvert,
   RequisitionCase,
   RequisitionFields,
   ReviewDecision
@@ -92,5 +96,40 @@ export function resubmitRequisition(
   return request(identity, `/api/requisitions/${row.reference}/resubmit`, {
     method: "POST",
     body: JSON.stringify({ generation: row.generation, fields })
+  });
+}
+
+export interface AdvertDraft {
+  questions: Array<{ prompt: string; expected: string }>;
+  skills: Array<{ keyword: string; weight: number; targetYears: number }>;
+}
+
+export function publishAdvert(
+  identity: DemoIdentity,
+  row: RequisitionCase,
+  advert: AdvertDraft
+): Promise<RequisitionCase> {
+  return request(identity, `/api/requisitions/${row.reference}/advert`, {
+    method: "POST",
+    body: JSON.stringify({ generation: row.generation, ...advert })
+  });
+}
+
+export function listApplications(identity: DemoIdentity, reference: number): Promise<ApplicationRecord[]> {
+  return request(identity, `/api/requisitions/${reference}/applications`);
+}
+
+export function listOpenAdverts(identity: DemoIdentity): Promise<OpenAdvert[]> {
+  return request(identity, "/api/adverts");
+}
+
+export function applyToAdvert(
+  identity: DemoIdentity,
+  reference: number,
+  submission: ApplicationSubmission
+): Promise<ApplicationAcknowledgement> {
+  return request(identity, `/api/adverts/${reference}/applications`, {
+    method: "POST",
+    body: JSON.stringify(submission)
   });
 }
