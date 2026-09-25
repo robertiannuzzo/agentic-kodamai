@@ -1,9 +1,10 @@
 # Agentic Kodamai recruitment
 
-Agentic Kodamai is a local recruitment system built with Idris 2, TypeScript, React and SQLite. It implements the recruitment sequence specified in the project brief:
+Agentic Kodamai is a local recruitment system built with Idris 2, TypeScript, React and SQLite. The brief was to build a container-based recruitment system for Kodamai. The design note *Agentic Kodamai: Typed containers applied to Marie-Claude* proposes the first unit of work: the five-link recruitment spine as stage 1, and the hire morphism, with provenance, as stage 2. This repository implements both:
 
 ```text
-requisition -> approval -> advert -> application -> score -> hire
+requisition -> approval -> advert -> application -> score     stage 1: the five links
+                                                   score -> hire      stage 2: the hire morphism
 ```
 
 Idris enforces the relationships between stages. An advert requires approval for the exact requisition revision. An application and its score belong to the exact published advert. A hire requires a recorded shortlist decision and creates an employee record linked to the source application.
@@ -59,7 +60,7 @@ The header contains a role switch because authentication is not implemented.
 3. As **Recruiter**, publish the approved requisition with screening questions and weighted skills.
 4. As **Candidate**, enter an email address, answer the questions, provide experience, upload a PDF CV and optionally enter a cover letter.
 5. As **Recruiter**, review the ranked applications, score breakdowns, answers, extracted CV text, original PDFs and cover letters.
-6. Record a shortlist or rejection with a reason.
+6. Shortlist or reject the application. A rejection needs a reason; either can carry a private note.
 7. Hire a shortlisted candidate. The system creates a people record linked to the application, score and review evidence.
 
 Candidate emails and the selected role are sent as demo identity headers. They provide interface separation for the local application but do not establish identity. Do not use the system with real candidate data until authentication and deployment controls have been added.
@@ -106,7 +107,7 @@ The scoring policy is deterministic and intentionally simple. Keyword points com
 - Delete the stored PDF and clear the name, email, extracted CV text, cover letter, answers and review notes during erasure.
 - Retain non-identifying score and audit evidence.
 
-SQLite uses `secure_delete` and a rollback journal. Databases created by earlier versions are vacuumed once during migration to remove recoverable content from free pages. This does not erase external copies, filesystem snapshots, backups or PDFs already downloaded by a recruiter.
+SQLite uses `secure_delete` and a rollback journal. Any database written before this behaviour was added is vacuumed once at startup, after migrations, to remove recoverable content from free pages. This does not erase external copies, filesystem snapshots, backups or PDFs already downloaded by a recruiter.
 
 ## Architecture
 
@@ -137,15 +138,15 @@ The PDF parser runs in the API process. Size, page and request-rate limits reduc
 
 ## Compiler-enforced relationships
 
-The core uses mathematical containers: each prompt determines its permitted reply type, and handlers compose through `Seq`, `Sum`, `Tensor` and `Product`.
+The core uses mathematical containers, as in *Containers for Typed Agentic AI*: each prompt determines its permitted reply type, and handlers compose through `Seq`, `Sum`, `Tensor` and `Product`. "Container" always means this abstraction here; the repository has no Docker or other deployment containers.
 
 Examples of enforced relationships:
 
 - `Approved r` is required to publish an advert for requisition `r`.
 - `Application a` retains the exact advert `a` and its question and skill definitions.
 - `Score a` retains the application scored against advert `a`.
-- a transition reply identifies the targeted requisition and its next generation;
-- a hire returns an employee together with equality evidence linking it to the scored application.
+- A transition reply identifies the targeted requisition and its next generation.
+- A hire returns an employee together with equality evidence linking it to the scored application.
 
 [`SwapQuestions.idr`](tests/compile-fail/SwapQuestions.idr) demonstrates the central failure case: an application created for one question set cannot be reused after the advert's questions change, even if the numeric advert identifier is unchanged.
 
@@ -160,6 +161,8 @@ make demo       # compile and run the command-line example
 make check      # type-check the Idris library
 make lint       # repository hygiene checks
 ```
+
+`make demo` should print reference `1`, advert `1`, keywords `5`, experience `18`, screening `20`, completeness `3`, total **46**, audit evidence naming the advert, application and scoring policy, and a hire whose employee record names advert `1`, application `1`.
 
 The current suites contain:
 
@@ -186,6 +189,8 @@ make test
 ```
 
 The initial bootstrap requires network access. Tests and the application do not require external services or credentials.
+
+GitHub Actions runs the same path from a clean checkout on every push and pull request: it builds the pinned compiler from source on Ubuntu 24.04 with Node 24, then runs `make test`, the production build and the Playwright journeys in Chromium.
 
 ## Repository layout
 
@@ -221,4 +226,4 @@ Recommended technical references:
 - No automatic backup management or erasure of operator-created copies.
 - No automated hiring decision.
 
-The original brief requested a typed model of the five-link recruitment spine. The repository also implements the hire transition, local persistence and a complete browser workflow. [ADR 001](docs/adr/001-idris2.md) records the use of Idris 2 instead of Haskell because applications are indexed by complete advert values and hire provenance uses dependent equality.
+The design note's deliverables for stage 1 were a Haskell model of the five links, a LaTeX design-decisions document and one worked demonstration of an attempted violation that does not compile. This repository also implements stage 2, persists both stages and runs the whole workflow in a browser. The refused violation is the one the note names, editing a live advert's questions ([`SwapQuestions.idr`](tests/compile-fail/SwapQuestions.idr)). The decisions are kept as Markdown ADRs in [`docs/adr/`](docs/adr/). [ADR 001](docs/adr/001-idris2.md) records the choice of Idris 2 over Haskell, which the note's Q5 left open: applications are indexed by complete advert values, and hire provenance needs dependent equality.

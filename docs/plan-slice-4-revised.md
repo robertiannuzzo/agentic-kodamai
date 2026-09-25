@@ -1,6 +1,6 @@
 # Plan: Slice 4 — PDF CV upload and optional cover-letter text
 
-Status: ready for implementation.
+Status: implemented in PR #13 (see [Slice 4](slice-4.md)); review fixes in PR #14. Sign-in remains unstarted and needs a separately approved scope.
 
 This replaces the scope in `docs/plan-slice-4.md`. Keep that file as historical context, but do **not** implement its sign-in, candidate-account, or cover-letter-upload work as part of this slice.
 
