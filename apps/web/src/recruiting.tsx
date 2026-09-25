@@ -301,7 +301,7 @@ function HireControl({
       <p className="eyebrow">
         <IdCard size={13} aria-hidden="true" /> Hire
       </p>
-      <p className="hint">This makes them an employee and keeps a link to their application.</p>
+      <p className="hint">Hiring this candidate adds them to your staff list, with a link back to their application.</p>
       <div className="form-grid">
         <label>
           Legal name
