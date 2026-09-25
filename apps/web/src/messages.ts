@@ -5,7 +5,6 @@ const errorMessages: Record<string, string> = {
   "reason-required": "Give a reason for this decision.",
   "wrong-stage": "That action is not available at this stage.",
   "already-applied": "You have already applied for this role.",
-  "consent-required": "Please confirm consent before applying.",
   "answers-do-not-match-questions": "Answer every screening question.",
   "experience-does-not-match-skills": "Give your years of experience for every skill.",
   "privacy-notice-required": "Please confirm you have read the privacy notice.",
@@ -18,7 +17,7 @@ const errorMessages: Record<string, string> = {
   "invalid-legal-name": "Enter the new starter's legal name.",
   "rate-limited": "Too many attempts. Please wait a few minutes and try again.",
   "invalid-reason": "Give a reason.",
-  "internal-server-error": "Something went wrong. The stored record may no longer match its evidence."
+  "internal-server-error": "Something went wrong. Try again, and contact us if it keeps happening."
 };
 
 export function describeError(code: string): string {

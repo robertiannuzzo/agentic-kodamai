@@ -230,7 +230,7 @@ export function App() {
               <section className="panel create-panel">
                 <p className="eyebrow">New requisition</p>
                 <h1 className="display">Create a hiring request</h1>
-                <p className="lede">Save a draft now. Submitting it records the evidence an approver needs.</p>
+                <p className="lede">Save a draft now and submit it when it's ready for approval.</p>
                 <FieldForm
                   action="Save draft"
                   busy={busy}
@@ -249,8 +249,7 @@ export function App() {
                   Every hire, <em>traceable</em>.
                 </h1>
                 <p className="lede">
-                  Raise a requisition, get it approved, publish a frozen advert, and hire with proof of where each person
-                  came from.
+                  Request a new hire, get it approved, advertise the role, and choose who to hire.
                 </p>
                 {role === "requester" ? (
                   <button className="button primary" onClick={() => setCreating(true)}>

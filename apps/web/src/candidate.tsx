@@ -93,12 +93,11 @@ function ApplyForm({
           </h3>
           <ul>
             <li>
-              Kodamai processes your application to take steps you have asked for before a possible employment
-              contract. We ask only for what we need to assess it.
+              We use your application only to consider you for this role, and we ask only for what we need.
             </li>
             <li>
-              Your answers and experience are scored by a fixed, versioned rule set. A person reviews every
-              application and makes every decision; the score never decides on its own.
+              Every applicant is scored by the same fixed rules. A person reads every application and makes every
+              decision; the score never decides on its own.
             </li>
             <li>
               We keep your application for {advert.retentionDays} days, then remove your personal data

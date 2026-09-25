@@ -84,7 +84,7 @@ export function railSteps(row: RequisitionCase, applications: number | null): Ra
     },
     {
       key: "advert",
-      label: "Advert frozen",
+      label: "Advertised",
       detail:
         row.advert === null
           ? stage === "approved"
@@ -141,7 +141,7 @@ export function describeEvidence(entry: AuditEntry): string {
     case "revised":
       return `Revised to revision ${entry.revision}`;
     case "advert-created":
-      return "Advert published and frozen";
+      return "Advert published";
     default:
       return entry.detail;
   }
