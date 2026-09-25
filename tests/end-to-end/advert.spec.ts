@@ -120,10 +120,13 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(detail).toContainText("policy:recruitment-score-v1");
   await expect(detail).toContainText("Idris and SQL experience building compilers.");
   await expect(detail).toContainText("I have built two compilers and would like to build a third.");
-  // The original PDF opens in a new tab.
+  // The original PDF is fetched privately and opened in a new tab. Whether the
+  // tab then shows it depends on the browser having a PDF viewer (CI's does not).
   const popup = page.waitForEvent("popup");
+  const cv = page.waitForResponse((response) => response.url().endsWith("/applications/1/cv"));
   await detail.getByRole("button", { name: "View CV" }).click();
-  await expect.poll(async () => (await popup).url()).toMatch(/^blob:/u);
+  expect((await cv).status()).toBe(200);
+  expect((await cv).headers()["content-type"]).toBe("application/pdf");
   await (await popup).close();
   await expect(page.getByText("The score is a guide", { exact: false }).first()).toBeVisible();
 
