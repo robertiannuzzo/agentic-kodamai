@@ -401,6 +401,62 @@ const migrations: readonly Migration[] = [
           )
       );
     `
+  },
+  {
+    version: 9,
+    name: "uploaded-cv-documents-and-cover-letters",
+    sql: `
+      -- The original CV. It lives in the database, not on disk, so erasing an
+      -- application removes the file in the same transaction. Documents belong
+      -- to one tenant and are never shared, even when two files are identical.
+      CREATE TABLE documents (
+        document_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id TEXT NOT NULL,
+        sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+        media_type TEXT NOT NULL CHECK (media_type = 'application/pdf'),
+        bytes BLOB NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TRIGGER documents_immutable_update BEFORE UPDATE ON documents
+        BEGIN SELECT RAISE(ABORT, 'document-immutable'); END;
+
+      ALTER TABLE applications ADD COLUMN cv_document_id INTEGER REFERENCES documents(document_id);
+      ALTER TABLE applications ADD COLUMN cover_letter_text TEXT;
+      CREATE UNIQUE INDEX applications_cv_document ON applications (cv_document_id)
+        WHERE cv_document_id IS NOT NULL;
+
+      -- Erasure now also unlinks the CV document and clears the cover letter.
+      -- The document row can then be deleted; while an application still
+      -- points at it, the foreign key refuses the delete.
+      DROP TRIGGER applications_erasure_only;
+      CREATE TRIGGER applications_erasure_only BEFORE UPDATE ON applications
+        WHEN OLD.erased_at IS NOT NULL
+          OR NEW.erased_at IS NULL
+          OR NEW.erasure_reason IS NULL
+          OR NEW.candidate_name <> 'Erased candidate'
+          OR NEW.cv_text <> ''
+          OR NEW.cv_version <> 'erased'
+          OR NEW.cv_document_id IS NOT NULL
+          OR NEW.cover_letter_text IS NOT NULL
+          OR NEW.candidate_actor NOT LIKE 'erased:%'
+          OR NEW.evidence_actor IS NOT NEW.candidate_actor
+          OR NEW.reference IS NOT OLD.reference
+          OR NEW.application_id IS NOT OLD.application_id
+          OR NEW.tenant_id IS NOT OLD.tenant_id
+          OR NEW.cv_locator IS NOT OLD.cv_locator
+          OR NEW.notice_acknowledged_at IS NOT OLD.notice_acknowledged_at
+          OR NEW.keywords IS NOT OLD.keywords
+          OR NEW.experience IS NOT OLD.experience
+          OR NEW.screening IS NOT OLD.screening
+          OR NEW.completeness IS NOT OLD.completeness
+          OR NEW.total IS NOT OLD.total
+          OR NEW.policy_version IS NOT OLD.policy_version
+          OR NEW.evidence_tick IS NOT OLD.evidence_tick
+          OR NEW.evidence_revision IS NOT OLD.evidence_revision
+          OR NEW.evidence_detail IS NOT OLD.evidence_detail
+          OR NEW.created_at IS NOT OLD.created_at
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+    `
   }
 ];
 

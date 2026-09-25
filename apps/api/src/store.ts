@@ -6,7 +6,6 @@ import type {
   ApplicationAcknowledgement,
   ApplicationReview,
   ApplicationRecord,
-  ApplicationSubmission,
   AuditEntry,
   EmployeeRecord,
   OpenAdvert,
@@ -36,8 +35,14 @@ export interface CommitContext {
 
 export interface ApplicationCommit {
   reference: number;
-  submission: ApplicationSubmission;
-  cv: { locator: string; version: string };
+  submission: {
+    candidateName: string;
+    coverLetterText: string | null;
+    answers: Array<{ questionId: number; answer: string }>;
+    years: Array<{ skillId: number; years: number }>;
+  };
+  /** The uploaded PDF and the text the extraction leaf read from it. */
+  cv: { locator: string; version: string; text: string; document: Buffer };
   receipt: ScoreReceipt;
 }
 
@@ -540,13 +545,20 @@ export class RecruitmentStore {
       if (advertised.stage !== "advertising" || advertised.hired >= advertised.headcount) {
         throw new StoreError("advert-closed");
       }
+      // Stored in the same transaction as the application: a refused or
+      // replayed submission leaves no document behind.
+      const document = this.database
+        .prepare(`INSERT INTO documents (tenant_id, sha256, media_type, bytes, created_at)
+          VALUES (?, ?, 'application/pdf', ?, ?)`)
+        .run(context.tenantId, input.cv.version, input.cv.document, Date.now());
       try {
         this.database
           .prepare(`INSERT INTO applications
             (reference, application_id, tenant_id, candidate_actor, candidate_name, cv_locator,
-             cv_version, cv_text, notice_acknowledged_at, keywords, experience, screening, completeness, total,
-             policy_version, evidence_actor, evidence_tick, evidence_revision, evidence_detail, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+             cv_version, cv_text, cv_document_id, cover_letter_text, notice_acknowledged_at, keywords,
+             experience, screening, completeness, total, policy_version, evidence_actor, evidence_tick,
+             evidence_revision, evidence_detail, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(
             input.reference,
             receipt.applicationId,
@@ -555,7 +567,9 @@ export class RecruitmentStore {
             submission.candidateName,
             input.cv.locator,
             input.cv.version,
-            submission.cvText,
+            input.cv.text,
+            Number(document.lastInsertRowid),
+            submission.coverLetterText,
             receipt.evidence.tick,
             receipt.breakdown.keywords,
             receipt.breakdown.experience,
@@ -688,19 +702,28 @@ export class RecruitmentStore {
   }
 
   /**
-   * Remove personal data from one application: name, contact identity, CV text,
-   * free-text answers and review notes. Scores and evidence remain, so the
-   * record of what was decided survives without identifying the person.
+   * Remove personal data from one application: name, contact identity, the CV
+   * file and its text, cover letter, free-text answers and review notes.
+   * Scores and evidence remain, so the record of what was decided survives
+   * without identifying the person.
    */
   private eraseRow(reference: number, applicationId: number, reason: string, now: number): void {
-    const erased = this.database
+    const document = this.database
+      .prepare(`SELECT cv_document_id FROM applications
+        WHERE reference = ? AND application_id = ? AND erased_at IS NULL`)
+      .get(reference, applicationId) as Row | undefined;
+    if (document === undefined) return;
+    this.database
       .prepare(`UPDATE applications
         SET candidate_name = ?, candidate_actor = 'erased:' || reference || ':' || application_id,
             evidence_actor = 'erased:' || reference || ':' || application_id,
-            cv_text = '', cv_version = 'erased', erased_at = ?, erasure_reason = ?
+            cv_text = '', cv_version = 'erased', cv_document_id = NULL, cover_letter_text = NULL,
+            erased_at = ?, erasure_reason = ?
         WHERE reference = ? AND application_id = ? AND erased_at IS NULL`)
       .run(ERASED_NAME, now, reason, reference, applicationId);
-    if (Number(erased.changes) === 0) return;
+    if (document.cv_document_id !== null) {
+      this.database.prepare("DELETE FROM documents WHERE document_id = ?").run(natural(document.cv_document_id));
+    }
     this.database
       .prepare("UPDATE application_answers SET answer = '' WHERE reference = ? AND application_id = ?")
       .run(reference, applicationId);
@@ -942,6 +965,19 @@ export class RecruitmentStore {
     };
   }
 
+  /** The original CV of an application that has not been erased. */
+  cvDocument(tenantId: string, reference: number, applicationId: number): Uint8Array | null {
+    const row = this.database
+      .prepare(`SELECT documents.bytes FROM applications
+        JOIN documents ON documents.document_id = applications.cv_document_id
+          AND documents.tenant_id = applications.tenant_id
+        WHERE applications.tenant_id = ? AND applications.reference = ? AND applications.application_id = ?
+          AND applications.erased_at IS NULL`)
+      .get(tenantId, reference, applicationId) as Row | undefined;
+    if (row === undefined || !(row.bytes instanceof Uint8Array)) return null;
+    return row.bytes;
+  }
+
   /** Recruiter view: every application with its answers, experience and score workings. */
   applications(tenantId: string, reference: number): ApplicationRecord[] {
     const advertised = this.get(tenantId, reference);
@@ -973,6 +1009,8 @@ export class RecruitmentStore {
         candidateActor: requiredString(row.candidate_actor),
         cvVersion: requiredString(row.cv_version),
         cvText: text(row.cv_text),
+        hasCvDocument: row.cv_document_id !== null,
+        coverLetterText: row.cover_letter_text === null ? null : text(row.cover_letter_text),
         answers: (answers.all(reference, applicationId) as Row[]).map((entry) => {
           const question = schema.questions.find((q) => q.questionId === natural(entry.question_id));
           if (question === undefined) throw new StoreError("invalid-stored-state");

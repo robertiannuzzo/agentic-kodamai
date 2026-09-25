@@ -8,7 +8,6 @@ import type {
   ApiError,
   ApplicationAcknowledgement,
   ApplicationReview,
-  ApplicationSubmission,
   DemoRole,
   EmployeeRecord,
   RequisitionCase,
@@ -16,10 +15,12 @@ import type {
   ReviewDecision,
   WorkflowCommand
 } from "../../../packages/contracts/src/index.js";
+import { extractCvText, readApplicationUpload, UploadError, type ApplicationUpload } from "./cv.js";
 import {
   RecruitmentStore,
   StoreError,
   workflowCase,
+  type ApplicationCommit,
   type CommitContext
 } from "./store.js";
 import { WorkflowClient, WorkflowError } from "./workflow.js";
@@ -231,12 +232,19 @@ function advertSchema(input: Record<string, unknown>): { questions: AdvertQuesti
   };
 }
 
-function submission(input: Record<string, unknown>): ApplicationSubmission {
+/** Optional plain text: trimmed, and absent when nothing is left. */
+function coverLetter(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = text(value, "cover-letter").trim();
+  if (Array.from(trimmed).length > 5000) throw new HttpError(400, "cover-letter-too-long");
+  return trimmed === "" ? null : trimmed;
+}
+
+function submission(input: Record<string, unknown>): ApplicationCommit["submission"] {
   if (input.acknowledgedPrivacyNotice !== true) throw new HttpError(400, "privacy-notice-required");
   return {
     candidateName: boundedText(input.candidateName, "candidate-name", 200),
-    cvText: boundedText(input.cvText, "cv-text", 50_000),
-    acknowledgedPrivacyNotice: true,
+    coverLetterText: coverLetter(input.coverLetterText),
     answers: list(input.answers, "answers", 20).map((value) => {
       const a = record(value, "answer");
       return { questionId: integer(a.questionId, "question-id"), answer: text(a.answer, "answer") };
@@ -282,6 +290,15 @@ function applicationAction(pathname: string): { reference: number; applicationId
   return { reference, applicationId, action: match[3] };
 }
 
+function cvDocumentTarget(pathname: string): { reference: number; applicationId: number } | null {
+  const match = /^\/api\/requisitions\/(\d+)\/applications\/(\d+)\/cv$/u.exec(pathname);
+  if (match?.[1] === undefined || match[2] === undefined) return null;
+  const reference = Number(match[1]);
+  const applicationId = Number(match[2]);
+  if (!Number.isSafeInteger(reference) || !Number.isSafeInteger(applicationId)) return null;
+  return { reference, applicationId };
+}
+
 function withdrawalReference(pathname: string): number | null {
   const match = /^\/api\/adverts\/(\d+)\/applications\/mine$/u.exec(pathname);
   if (match?.[1] === undefined) return null;
@@ -312,6 +329,7 @@ function fingerprint(operation: string, input: unknown): string {
 
 function mapError(error: unknown): HttpError {
   if (error instanceof HttpError) return error;
+  if (error instanceof UploadError) return new HttpError(error.status, error.code);
   if (error instanceof StoreError) {
     if (
       error.code === "stale-version" ||
@@ -448,25 +466,26 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
   }
 
   /**
-   * A candidate application: the kernel's intake branch validates it, reads the
-   * stored CV through the extraction leaf, builds the advert-indexed
-   * application and scores it. Only then is anything persisted.
+   * A candidate application: text is read from the uploaded PDF, then the
+   * kernel's intake branch validates it, reads that text through the
+   * extraction leaf, builds the advert-indexed application and scores it.
+   * Only then are the application and its PDF persisted, together.
    */
   async function apply(
     request: IncomingMessage,
     user: Identity,
     key: string,
     reference: number,
-    input: Record<string, unknown>
+    upload: ApplicationUpload
   ): Promise<ApplicationAcknowledgement> {
     const context: CommitContext = {
       tenantId: user.tenantId,
       actor: user.actor,
       idempotencyKey: key,
       operation: `apply:${reference}`,
-      requestFingerprint: fingerprint(`apply:${reference}`, input)
+      requestFingerprint: fingerprint(`apply:${reference}`, { application: upload.application, cv: upload.sha256 })
     };
-    const application = submission(input);
+    const application = submission(upload.application);
     // A retry of a request that already succeeded replays its stored response
     // and must not spend rate-limit capacity or be refused by it.
     const replayed = store.applicationIdempotencyResult(context);
@@ -490,20 +509,27 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       if (store.openAdverts(user.tenantId, user.actor).some((advert) => advert.reference === reference && advert.applied)) {
         throw new HttpError(409, "already-applied");
       }
+      // Read the PDF before an identifier is allocated, so an unreadable file
+      // does not use one up.
+      const cvText = await extractCvText(upload.cv);
       const applicationId = store.allocateApplicationId(reference);
       const cv = {
         locator: `cv://${user.tenantId}/${reference}/${applicationId}`,
-        version: createHash("sha256").update(application.cvText).digest("hex")
+        version: upload.sha256,
+        text: cvText
       };
       const receipt = await workflow.intake(workflowCase(advertised), {
         applicationId,
         actor: user.actor,
         tick: Date.now(),
-        cv: { ...cv, text: application.cvText },
+        cv,
         answers: application.answers,
         years: application.years
       });
-      return store.commitApplication({ reference, submission: application, cv, receipt }, context);
+      return store.commitApplication(
+        { reference, submission: application, cv: { ...cv, document: upload.cv }, receipt },
+        context
+      );
     });
   }
 
@@ -675,9 +701,9 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
       const applyReference = advertApplicationsReference(url.pathname);
       if (request.method === "POST" && applyReference !== null) {
         requireRole(user.role, "candidate");
-        const input = await body(request);
         const key = idempotencyKey(request);
-        const result = await apply(request, user, key, applyReference, input);
+        const upload = await readApplicationUpload(request);
+        const result = await apply(request, user, key, applyReference, upload);
         json(response, 201, result);
         return;
       }
@@ -720,6 +746,25 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         response.end();
         return;
       }
+      const cvTarget = cvDocumentTarget(url.pathname);
+      if (request.method === "GET" && cvTarget !== null) {
+        requireRole(user.role, "recruiter");
+        accessible(user, cvTarget.reference, false);
+        const document = store.cvDocument(user.tenantId, cvTarget.reference, cvTarget.applicationId);
+        if (document === null) throw new HttpError(404, "not-found");
+        response.writeHead(200, {
+          "content-type": "application/pdf",
+          "content-length": String(document.byteLength),
+          "content-disposition": `inline; filename="cv-${cvTarget.reference}-${cvTarget.applicationId}.pdf"`,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          "content-security-policy": "default-src 'none'; sandbox",
+          "cross-origin-resource-policy": "same-origin"
+        });
+        response.end(document);
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/people") {
         json(response, 200, store.employees(user.tenantId));
         return;

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { pdf } from "../fixtures/pdf";
 
 type Role = "Requester" | "Approver" | "Recruiter" | "Candidate";
 
@@ -9,7 +10,7 @@ async function viewAs(page: Page, role: Role): Promise<void> {
 async function applyAs(
   page: Page,
   email: string,
-  details: { name: string; answers: [string, string]; years: [string, string]; cv: string }
+  details: { name: string; answers: [string, string]; years: [string, string]; cv: string; coverLetter?: string }
 ): Promise<void> {
   await viewAs(page, "Candidate");
   const identity = page.getByLabel("Candidate email");
@@ -24,7 +25,13 @@ async function applyAs(
   await page.getByLabel("Do you use typed programming?").fill(details.answers[1]);
   await page.getByLabel("idris", { exact: true }).fill(details.years[0]);
   await page.getByLabel("sql", { exact: true }).fill(details.years[1]);
-  await page.getByLabel("CV").fill(details.cv);
+  const file = `${details.name.toLowerCase().replace(/ /gu, "-")}-cv.pdf`;
+  await page.getByLabel("CV (PDF)").setInputFiles({ name: file, mimeType: "application/pdf", buffer: pdf([details.cv]) });
+  await expect(page.getByText(file)).toBeVisible();
+  if (details.coverLetter !== undefined) {
+    await page.getByLabel("Cover letter (optional)").fill(details.coverLetter);
+    await expect(page.getByText(`${details.coverLetter.length} / 5,000`)).toBeVisible();
+  }
   await page.getByLabel("I have read how my application will be used.").check();
   await page.getByRole("button", { name: "Submit application" }).click();
   await expect(page.getByRole("status")).toContainText("Application received");
@@ -78,7 +85,8 @@ test("an approved requisition is advertised, applied to and reviewed with score 
     name: "Ada Lovelace",
     answers: ["yes", "yes"],
     years: ["4", "8"],
-    cv: "Idris and SQL experience building compilers."
+    cv: "Idris and SQL experience building compilers.",
+    coverLetter: "I have built two compilers and would like to build a third."
   });
   await expect(page.getByText("weight", { exact: false })).toHaveCount(0);
   await applyAs(page, "grace@example.test", {
@@ -110,6 +118,13 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(detail).toContainText("keywords5");
   await expect(detail).toContainText("experience18");
   await expect(detail).toContainText("policy:recruitment-score-v1");
+  await expect(detail).toContainText("Idris and SQL experience building compilers.");
+  await expect(detail).toContainText("I have built two compilers and would like to build a third.");
+  // The original PDF opens in a new tab.
+  const popup = page.waitForEvent("popup");
+  await detail.getByRole("button", { name: "View CV" }).click();
+  await expect.poll(async () => (await popup).url()).toMatch(/^blob:/u);
+  await (await popup).close();
   await expect(page.getByText("The score is a guide", { exact: false }).first()).toBeVisible();
 
   // A person decides: shortlist Ada; rejecting Grace needs a reason.
@@ -118,6 +133,7 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(applications.nth(0).getByTestId("decision")).toHaveText("Shortlisted");
   await expect(detail).toContainText("application:1;total:46;disposition:shortlist");
   await applications.nth(1).getByText("Grace Hopper").click();
+  await expect(detail).toContainText("No cover letter provided.");
   await detail.getByRole("button", { name: "Reject" }).click();
   await expect(detail.getByRole("alert")).toContainText("Give a reason");
   await detail.getByLabel("Reason (required to reject)").fill("Needs more typed programming.");
@@ -141,6 +157,9 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(applications.nth(1)).toContainText("Erased candidate");
   await expect(applications.nth(1).getByTestId("decision")).toHaveText("Erased");
   await expect(applications.nth(1).getByTestId("total")).toHaveText("20 / 49");
+  await applications.nth(1).getByText("Erased candidate").click();
+  await expect(detail.getByRole("button", { name: "View CV" })).toHaveCount(0);
+  await expect(detail).not.toContainText("Cover letter");
 
   // Hire the shortlisted candidate: a people record with provenance, and the requisition fills.
   await applications.nth(0).getByText("Ada Lovelace").click();

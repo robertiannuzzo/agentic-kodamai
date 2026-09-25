@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { pdf } from "../fixtures/pdf";
 
-async function api(request: APIRequestContext, role: string, actor: string, path: string, data: unknown) {
+const cv = { name: "cv.pdf", mimeType: "application/pdf", buffer: pdf(["Testing"]) };
+
+async function api(request: APIRequestContext, role: string, actor: string, path: string, data: unknown, upload?: Buffer) {
   const response = await request.post(path, {
     headers: {
       "x-demo-role": role,
@@ -9,7 +12,10 @@ async function api(request: APIRequestContext, role: string, actor: string, path
       "x-demo-tenant": "demo",
       "idempotency-key": randomUUID()
     },
-    data
+    // An application is a multipart upload: the CV file and the rest as JSON.
+    ...(upload === undefined
+      ? { data }
+      : { multipart: { application: JSON.stringify(data), cv: { ...cv, buffer: upload } } })
   });
   expect(response.ok(), `${path}: ${await response.text()}`).toBeTruthy();
   return (await response.json()) as { reference: number; generation: number };
@@ -33,11 +39,10 @@ test("a slow response for a previous candidate never overwrites the current one"
   });
   await api(request, "candidate", "slow@example.test", `/api/adverts/${row.reference}/applications`, {
     candidateName: "Slow Candidate",
-    cvText: "Testing",
     acknowledgedPrivacyNotice: true,
     answers: [{ questionId: 1, answer: "yes" }],
     years: [{ skillId: 1, years: 1 }]
-  });
+  }, cv.buffer);
 
   // Delay only the candidate who has applied.
   await page.route("**/api/adverts", async (route) => {
@@ -94,7 +99,7 @@ test("a slow application submitted as one candidate never marks the next candida
   await page.getByLabel("Last name").fill("Candidate");
   await page.getByLabel("Ready?").fill("yes");
   await page.getByLabel("testing", { exact: true }).fill("1");
-  await page.getByLabel("CV").fill("Testing");
+  await page.getByLabel("CV (PDF)").setInputFiles(cv);
   await page.getByLabel("I have read how my application will be used.").check();
   await page.getByRole("button", { name: "Submit application" }).click();
 
@@ -132,7 +137,7 @@ test("the email entered on the form becomes the applicant's identity", async ({ 
   await page.getByLabel("Email", { exact: true }).fill("grace.field@example.test");
   await page.getByLabel("Ready?").fill("yes");
   await page.getByLabel("testing", { exact: true }).fill("1");
-  await page.getByLabel("CV").fill("Testing");
+  await page.getByLabel("CV (PDF)").setInputFiles(cv);
   await page.getByLabel("I have read how my application will be used.").check();
   await page.getByRole("button", { name: "Submit application" }).click();
 

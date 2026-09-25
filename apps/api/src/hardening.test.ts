@@ -21,7 +21,7 @@ async function hiredAndWithdrawn(running: RunningApplication, candidate: string)
     role: "candidate",
     actor: candidate,
     method: "POST",
-    body: application({ candidateName: "Private Person" })
+    form: application({ candidateName: "Private Person" })
   });
   assert.equal(applied.status, 201);
   const base = `/api/requisitions/${reference}/applications/1`;
@@ -76,7 +76,7 @@ test("an idempotent retry is replayed even when the rate limit is exhausted", as
           actor: "retry@example.test",
           method: "POST",
           idempotencyKey,
-          body: application()
+          form: application()
         });
       const first = await send(key);
       assert.equal(first.status, 201);
@@ -96,7 +96,7 @@ test("impossible calendar dates are refused rather than rolled over", async () =
       role: "candidate",
       actor: "date@example.test",
       method: "POST",
-      body: application()
+      form: application()
     });
     const base = `/api/requisitions/${reference}/applications/1`;
     await request(running, `${base}/review`, { role: "recruiter", method: "POST", body: { disposition: "shortlist" } });
@@ -174,7 +174,7 @@ test("erasure forgets cached review and hire responses, so a replay cannot re-ex
       role: "candidate",
       actor: candidate,
       method: "POST",
-      body: application({ candidateName: "Cached Person" })
+      form: application({ candidateName: "Cached Person" })
     });
     const base = `/api/requisitions/${reference}/applications/1`;
     const reviewKey = randomUUID();
@@ -210,7 +210,7 @@ test("concurrent identical applications share one result under an exhausted rate
           actor: "twice@example.test",
           method: "POST",
           idempotencyKey: key,
-          body: application()
+          form: application()
         });
       const [first, second] = await Promise.all([send(), send()]);
       assert.equal(first?.status, 201);
@@ -234,7 +234,7 @@ test("upgrading a database erased before migration 7 repairs it and drops its ca
         role: "candidate",
         actor: candidate,
         method: "POST",
-        body: application()
+        form: application()
       });
       await request(running, `/api/requisitions/${reference}/applications/1/review`, {
         role: "recruiter",
@@ -253,7 +253,8 @@ test("upgrading a database erased before migration 7 repairs it and drops its ca
       DROP TRIGGER applications_erasure_only;
       UPDATE applications SET evidence_actor = '${candidate}';
       CREATE TRIGGER applications_erasure_only BEFORE UPDATE ON applications BEGIN SELECT 1; END;
-      DELETE FROM schema_migrations WHERE version >= 7;
+      -- Replay only the repairs under test; later migrations stay applied.
+      DELETE FROM schema_migrations WHERE version IN (7, 8);
     `);
     database
       .prepare(`INSERT INTO idempotency_records
@@ -276,7 +277,7 @@ test("upgrading a database erased before migration 7 repairs it and drops its ca
         .get(`%${candidate}%`) as { count: number };
       assert.equal(Number(cached.count), 0);
       const versions = upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number };
-      assert.equal(Number(versions.version), 8);
+      assert.equal(Number(versions.version), 9);
     } finally {
       upgraded.close();
     }

@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { DemoRole, RequisitionCase } from "../../../packages/contracts/src/index.js";
+import { pdf } from "../../../tests/fixtures/pdf.js";
 import { createApplication, type Application, type ApplicationOptions } from "./server.js";
+
+export { pdf };
 
 export interface RunningApplication {
   application: Application;
@@ -32,14 +35,31 @@ export async function request(
     tenantId?: string;
     idempotencyKey?: string;
     body?: unknown;
+    /**
+     * An application sent as a multipart upload. Its `cvText` becomes the text
+     * of a generated PDF in the `cv` part unless `cv` gives the files to send.
+     */
+    form?: Record<string, unknown>;
+    cv?: Buffer[];
   } = {}
 ): Promise<{ status: number; json: unknown }> {
   const role = options.role ?? "requester";
   const method = options.method ?? "GET";
+  let payload: string | FormData | undefined =
+    options.body === undefined ? undefined : JSON.stringify(options.body);
+  if (options.form !== undefined) {
+    const { cvText, ...submission } = options.form;
+    const form = new FormData();
+    form.append("application", JSON.stringify(submission));
+    for (const file of options.cv ?? [pdf(String(cvText ?? "").split("\n"))]) {
+      form.append("cv", new Blob([new Uint8Array(file)], { type: "application/pdf" }), "cv.pdf");
+    }
+    payload = form;
+  }
   const response = await fetch(`${running.origin}${path}`, {
     method,
     headers: {
-      "content-type": "application/json",
+      ...(options.form === undefined ? { "content-type": "application/json" } : {}),
       "x-demo-role": role,
       "x-demo-actor": options.actor ?? `${role}@example.test`,
       "x-demo-tenant": options.tenantId ?? "demo",
@@ -47,7 +67,7 @@ export async function request(
         ? {}
         : { "idempotency-key": options.idempotencyKey ?? randomUUID() })
     },
-    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) })
+    ...(payload === undefined ? {} : { body: payload })
   });
   return { status: response.status, json: response.status === 204 ? null : ((await response.json()) as unknown) };
 }
