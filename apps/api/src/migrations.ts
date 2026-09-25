@@ -354,6 +354,53 @@ const migrations: readonly Migration[] = [
       CREATE TRIGGER employees_provenance_immutable BEFORE UPDATE ON employees
         BEGIN SELECT RAISE(ABORT, 'provenance-immutable'); END;
     `
+  },
+  {
+    version: 8,
+    name: "repair-earlier-erasures",
+    sql: `
+      -- Rows erased before migration 7 kept the candidate's email as the
+      -- scoring actor. Repair them, with the trigger lifted for the backfill.
+      DROP TRIGGER applications_erasure_only;
+      UPDATE applications SET evidence_actor = candidate_actor
+        WHERE erased_at IS NOT NULL AND evidence_actor IS NOT candidate_actor;
+      CREATE TRIGGER applications_erasure_only BEFORE UPDATE ON applications
+        WHEN OLD.erased_at IS NOT NULL
+          OR NEW.erased_at IS NULL
+          OR NEW.erasure_reason IS NULL
+          OR NEW.candidate_name <> 'Erased candidate'
+          OR NEW.cv_text <> ''
+          OR NEW.cv_version <> 'erased'
+          OR NEW.candidate_actor NOT LIKE 'erased:%'
+          OR NEW.evidence_actor IS NOT NEW.candidate_actor
+          OR NEW.reference IS NOT OLD.reference
+          OR NEW.application_id IS NOT OLD.application_id
+          OR NEW.tenant_id IS NOT OLD.tenant_id
+          OR NEW.cv_locator IS NOT OLD.cv_locator
+          OR NEW.notice_acknowledged_at IS NOT OLD.notice_acknowledged_at
+          OR NEW.keywords IS NOT OLD.keywords
+          OR NEW.experience IS NOT OLD.experience
+          OR NEW.screening IS NOT OLD.screening
+          OR NEW.completeness IS NOT OLD.completeness
+          OR NEW.total IS NOT OLD.total
+          OR NEW.policy_version IS NOT OLD.policy_version
+          OR NEW.evidence_tick IS NOT OLD.evidence_tick
+          OR NEW.evidence_revision IS NOT OLD.evidence_revision
+          OR NEW.evidence_detail IS NOT OLD.evidence_detail
+          OR NEW.created_at IS NOT OLD.created_at
+        BEGIN SELECT RAISE(ABORT, 'application-immutable'); END;
+
+      -- Cached responses for erased applications can carry the email, the
+      -- review reason and note. Retries of those requests are forgotten.
+      DELETE FROM idempotency_records WHERE EXISTS (
+        SELECT 1 FROM applications
+        WHERE applications.erased_at IS NOT NULL
+          AND idempotency_records.operation IN (
+            'review-application:' || applications.reference || ':' || applications.application_id,
+            'hire:' || applications.reference || ':' || applications.application_id
+          )
+      );
+    `
   }
 ];
 
