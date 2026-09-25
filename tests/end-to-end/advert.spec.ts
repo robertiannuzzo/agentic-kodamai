@@ -149,7 +149,7 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(page.getByTestId("stage")).toHaveText("Filled");
   await expect(applications.nth(0).getByTestId("decision")).toHaveText("Hired · EMP-0001");
   await expect(page.getByRole("list", { name: "Recruitment chain" })).toContainText("1 of 1");
-  await page.getByRole("tab", { name: /People/ }).click();
+  await page.getByRole("tab", { name: /Hires/ }).click();
   const provenance = page.getByRole("list", { name: "Provenance of Ada Lovelace" });
   await expect(provenance).toContainText("Score 46");
   await expect(provenance).toContainText("disposition:shortlist");
