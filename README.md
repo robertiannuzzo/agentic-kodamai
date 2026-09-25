@@ -13,16 +13,46 @@ The browser application supports the complete workflow. It is intended for local
 
 ## Run the application
 
-### Requirements
+There are three steps: install the tools, build the pinned Idris compiler inside the checkout (once; it takes a few minutes), then build and start the application.
 
-- Node.js 24.15 or later; `.nvmrc` selects Node 24
-- npm
-- Idris 2 `0.8.0-fd405085b`
-- Chez Scheme
-- Make
-- Python 3.9 or later
+### 1. Install the tools
 
-Install dependencies, build the Idris worker, API and web application, then start the server:
+You need Node.js 24 (24.15 or later; CI tests Node 24), Make, a C compiler, Python 3.9 or later, curl, Chez Scheme and GMP. `.nvmrc` pins Node 24, so with [nvm](https://github.com/nvm-sh/nvm) run `nvm install` in the checkout.
+
+On macOS with Homebrew:
+
+```sh
+xcode-select --install          # Make, a C compiler and Python 3, if not already installed
+brew install chezscheme gmp
+nvm install                     # Node.js 24, from .nvmrc
+```
+
+On Debian or Ubuntu:
+
+```sh
+sudo apt-get install chezscheme libgmp-dev build-essential curl python3
+nvm install                     # Node.js 24, from .nvmrc
+```
+
+### 2. Build the Idris compiler
+
+The project needs Idris 2 `0.8.0-fd405085b`. `make bootstrap` downloads that exact version, checks its checksum and builds it into `build/toolchain/` inside the checkout; nothing is installed globally. It needs network access, and the checkout path must not contain spaces.
+
+On macOS, where Homebrew names the Chez Scheme binary `chez` and keeps GMP's headers outside the default search path:
+
+```sh
+CPATH="$(brew --prefix)/include" LIBRARY_PATH="$(brew --prefix)/lib" SCHEME=chez make bootstrap
+```
+
+On Debian or Ubuntu:
+
+```sh
+make bootstrap
+```
+
+If you already have this exact compiler, skip this step and set `IDRIS2=/absolute/path/to/idris2/bin/idris2` for the commands that follow.
+
+### 3. Build and start the application
 
 ```sh
 npm install
@@ -30,7 +60,7 @@ npm run build
 npm start
 ```
 
-Open <http://127.0.0.1:3001>.
+Open <http://127.0.0.1:3001>. The application starts empty; [Use the workflow](#use-the-workflow) walks through it. Any text-based PDF works as a CV, for example [`docs/sample-cv.pdf`](docs/sample-cv.pdf).
 
 Local data is stored in `var/recruitment.sqlite`. The following environment variables override the defaults:
 
@@ -58,7 +88,7 @@ The header contains a role switch because authentication is not implemented.
 1. As **Requester**, create a requisition and submit it.
 2. As **Approver**, approve it, decline it or return it for changes. The requester cannot approve their own submission.
 3. As **Recruiter**, publish the approved requisition with screening questions and weighted skills.
-4. As **Candidate**, enter an email address, answer the questions, provide experience, upload a PDF CV and optionally enter a cover letter.
+4. As **Candidate**, enter an email address, answer the questions, provide experience, upload a PDF CV (for example [`docs/sample-cv.pdf`](docs/sample-cv.pdf)) and optionally enter a cover letter.
 5. As **Recruiter**, review the ranked applications, score breakdowns, answers, extracted CV text, original PDFs and cover letters.
 6. Shortlist or reject the application. A rejection needs a reason; either can carry a private note.
 7. Hire a shortlisted candidate. The system creates a people record linked to the application, score and review evidence.
@@ -174,21 +204,7 @@ The current suites contain:
 
 Coverage includes workflow transitions, audit replay, self-review, stale and concurrent writes, idempotency, tenant isolation, frozen adverts, scoring, recorded decisions, hires, migrations, PDF validation and retrieval, keyboard interaction, withdrawal, retention and raw-database erasure checks.
 
-Tests require the compiler version in `toolchain.env`. To select an existing compiler directly:
-
-```sh
-IDRIS2=/absolute/path/to/idris2/bin/idris2 make test
-```
-
-To build the pinned compiler locally on Debian or Ubuntu:
-
-```sh
-sudo apt-get install chezscheme libgmp-dev build-essential curl python3
-make bootstrap
-make test
-```
-
-The initial bootstrap requires network access. Tests and the application do not require external services or credentials.
+Tests use the compiler from [step 2](#2-build-the-idris-compiler), or the one named by `IDRIS2`. They need no network access, external services or credentials. `make e2e` drives your installed Google Chrome; without Chrome, run `npx playwright install chromium` and then `CI=1 make e2e` to use Playwright's Chromium instead.
 
 GitHub Actions runs the same path from a clean checkout on every push and pull request: it builds the pinned compiler from source on Ubuntu 24.04 with Node 24, then runs `make test`, the production build and the Playwright journeys in Chromium.
 
