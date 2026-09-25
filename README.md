@@ -1,66 +1,27 @@
 # Agentic Kodamai recruitment
 
-A recruitment system built on the **mathematical containers** of *Containers for Typed Agentic AI*: a type of prompts, a reply type that depends on each prompt, and handlers that compose. It types the design note's five-link spine (requisition → approval → advert → application → score) and adds the stage-2 hire morphism. A web app runs the whole spine for real: requesters raise requisitions, approvers review them, recruiters publish frozen adverts, candidates apply, and recruiters review scored applications. Every write goes through one Idris agent, `kernelAgent`, for the container `Sum TransitionC (Sum IntakeC (Sum AssessC HireKC))`: requisition transitions, application intake, recorded human decisions, and hires that create a people record with proof of provenance.
+Agentic Kodamai is a local recruitment system built with Idris 2, TypeScript, React and SQLite. It implements the recruitment sequence specified in the project brief:
 
-## Start here: the 60-second version
-
-**A plausible bug that does not compile.** The design note's test is to edit a live advert's questions and show the compiler refusing it. [`SwapQuestions.idr`](tests/compile-fail/SwapQuestions.idr) republishes an advert with new questions under the same ID and tries to keep an existing application:
-
-```idris
-edited <- publish r approval ctx (advertId old) [MkQuestion 1 "A different question" "no", ...] (skillsOf old)
-Right (edited ** existing)   -- Mismatch between: old and edited.
+```text
+requisition -> approval -> advert -> application -> score -> hire
 ```
 
-It is one of **20 compile-fail fixtures**, each checked for its expected diagnostic. The others include approval without evidence, a forged score, a handler that returns the wrong reply, and a hire that replies "onboarding to follow" instead of an employee with provenance ([`OnboardingToFollow.idr`](tests/compile-fail/OnboardingToFollow.idr)).
+Idris enforces the relationships between stages. An advert requires approval for the exact requisition revision. An application and its score belong to the exact published advert. A hire requires a recorded shortlist decision and creates an employee record linked to the source application.
 
-**Containers are the architecture, not just the vocabulary.**
+The browser application supports the complete workflow. It is intended for local evaluation and demonstration. It does not provide production authentication or deployment infrastructure.
 
-- [`Container.idr`](src/Recruitment/Container.idr) implements `Cont`, `Handler`, `Agent`, `Seq`, `Sum`, `Tensor` and `Product`, as in the Agentic Sage appendix.
-- [`Spine.idr`](src/Recruitment/Application/Spine.idr) composes the five links with `Seq` and `Sum` and adds `HireC`, whose reply is `(e : Employee ** provenanceOf e = (a ** scoredApplication s))`.
-- [`Transition.idr`](src/Recruitment/Adapters/Transition.idr) is the requisition write path: a `dispatch` handler into a `Sum` of per-command containers, including publishing. Each reply is `Next ref generation`, the next state of *that* requisition exactly one generation on.
-- [`Kernel.idr`](src/Recruitment/Adapters/Kernel.idr) is the application path: `IntakeC`'s reply is `Receipt a` for the advert asked about, implemented by a handler into `validate ◁ (extract ◁ (application ◁ score))`, reusing the spine's own agents. The CV extractor is a leaf the composition root supplies, so a model can replace it without touching anything above it.
+## Run the application
 
-**What the types do and do not guarantee.** An advert cannot exist without approval of the exact requisition revision. Applications and scores are indexed by the exact advert, so they cannot be moved to another advert. A reviewer cannot approve their own submission. Persisted approvals are rebuilt only by replaying a legal audit trail. None of this makes the stored facts true: as section 6 of the design note says, the types guarantee the wiring, not that the components are honest. The [guarantee table](docs/architecture.md#compiler-guarantees-and-their-limits) draws the line precisely.
+### Requirements
 
-**Try it:** `make test`, then `npm install && npm run build && npm start` and open `http://127.0.0.1:3001`. Raise a requisition as the requester, approve it as the approver, publish an advert as the recruiter, apply as one or more candidates with a PDF CV (change the "Applying as" email), then review the ranked applications as the recruiter.
+- Node.js 24.15 or later; `.nvmrc` selects Node 24
+- npm
+- Idris 2 `0.8.0-fd405085b`
+- Chez Scheme
+- Make
+- Python 3.9 or later
 
-## Implemented product slice
-
-Slice 1 adds a usable requester/approver web workflow around the Idris core:
-
-- create and edit a requisition draft;
-- submit it for review;
-- approve, decline, or request changes with a required reason;
-- revise and resubmit the same requisition;
-- work an approver inbox of requisitions awaiting review;
-- publish a frozen advert with screening questions and weighted skills from a recruiter queue;
-- apply as a candidate with a PDF CV, an optional cover letter, answers and experience, acknowledging the privacy notice and seeing only an acknowledgement;
-- review applications ranked by score, with the breakdown, answers against expected answers, scoring evidence, the cover letter and the original CV;
-- record a shortlist or reasoned rejection as kernel evidence, after the kernel re-derives the stored score;
-- hire a shortlisted candidate, creating a people record linked to the scored application and both decisions; the requisition fills at its headcount;
-- withdraw (candidate) or erase (recruiter) an application's personal data, including its CV file and cover letter, with automatic anonymisation after a retention period;
-- enforce demo requester/approver permissions, separation of duties (no self-review) and optimistic generations;
-- scope requisitions by tenant and requester ownership;
-- persist authoritative transactional state and append-only audit history in SQLite;
-- deduplicate retried mutations with actor-scoped idempotency keys; and
-- migrate existing Slice 1 databases through ordered, recorded schema migrations.
-
-Every protected write sends one aggregate snapshot plus the proposed command to the compiled `recruitment-workflow` executable. Idris replays the aggregate's audit trail to rebuild its evidence, refusing any trail that is not a legal, independently reviewed run. It then routes the command through `transitionAgent` and returns the next state and mandatory evidence. SQLite atomically compares the generation and commits state, new audit facts, and the idempotent response. The process boundary uses a versioned length-prefixed protocol and a private temporary input file, so request capacity is not constrained by operating-system argument limits.
-
-The role switch and tenant header are explicitly demo identity mechanisms, not authentication. SQLite is the local adapter; a hosted multi-user release still needs PostgreSQL, real identity claims, database-enforced tenant isolation, an idempotency-retention policy, and an outbox when external side effects arrive.
-
-## Run
-
-Requires Idris **0.8.0-fd405085b**, Chez Scheme, Make, Python 3.9+, and Node.js 24.15+ (see `.nvmrc`), where `node:sqlite` is a release candidate rather than experimental. Node 22.5+ still runs the suite, with an experimental-feature warning. Only Idris's bundled prelude/base libraries are used; Python and Node run verification and application boundaries, not the typed recruitment rules.
-
-```sh
-make test       # hygiene, totality/type check, compiler fixtures, runtime tests, CLI smoke, HTTP
-make e2e        # production build, then browser journeys in Chrome (Playwright)
-make demo       # build and execute the composed five-stage example
-make check      # type-check the library
-```
-
-Install the web dependencies and run the Slice 1 application:
+Install dependencies, build the Idris worker, API and web application, then start the server:
 
 ```sh
 npm install
@@ -68,15 +29,155 @@ npm run build
 npm start
 ```
 
-Then open `http://127.0.0.1:3001`. Persistent local data is written to `var/recruitment.sqlite`. Set `DATABASE_PATH`, `HOST`, or `PORT` to override those defaults. For separate development processes, run `npm run dev:api` and `npm run dev:web`; Vite proxies `/api` to port 3001.
+Open <http://127.0.0.1:3001>.
 
-If `idris2` is managed by a wrapper, select its actual compiler directly:
+Local data is stored in `var/recruitment.sqlite`. The following environment variables override the defaults:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_PATH` | `var/recruitment.sqlite` | SQLite database path |
+| `HOST` | `127.0.0.1` | API bind address |
+| `PORT` | `3001` | API port |
+| `WEB_ROOT` | `build/web` | Compiled web application path |
+| `APPLICATION_RETENTION_DAYS` | `180` | Days before application data is anonymised |
+
+For development with automatic rebuilding, run these commands in separate terminals:
+
+```sh
+npm run dev:api
+npm run dev:web
+```
+
+Vite serves the web application and proxies `/api` to port 3001.
+
+## Use the workflow
+
+The header contains a role switch because authentication is not implemented.
+
+1. As **Requester**, create a requisition and submit it.
+2. As **Approver**, approve it, decline it or return it for changes. The requester cannot approve their own submission.
+3. As **Recruiter**, publish the approved requisition with screening questions and weighted skills.
+4. As **Candidate**, enter an email address, answer the questions, provide experience, upload a PDF CV and optionally enter a cover letter.
+5. As **Recruiter**, review the ranked applications, score breakdowns, answers, extracted CV text, original PDFs and cover letters.
+6. Record a shortlist or rejection with a reason.
+7. Hire a shortlisted candidate. The system creates a people record linked to the application, score and review evidence.
+
+Candidate emails and the selected role are sent as demo identity headers. They provide interface separation for the local application but do not establish identity. Do not use the system with real candidate data until authentication and deployment controls have been added.
+
+## Implemented behaviour
+
+### Requisitions and approval
+
+- Create, edit and submit requisition drafts.
+- Approve, decline or request changes with a required reason.
+- Revise and resubmit the same requisition after requested changes.
+- Prevent self-review, stale writes and transitions from the wrong stage.
+- Preserve an append-only audit history.
+
+### Adverts and applications
+
+- Publish one immutable advert from an approved requisition.
+- Freeze its screening questions, expected answers, skills and weights.
+- Accept one PDF CV of at most 5 MB and 20 pages.
+- Extract at most 50,000 characters of text; scanned PDFs are rejected because OCR is not implemented.
+- Accept an optional plain-text cover letter of at most 5,000 characters.
+- Store the original PDF privately in SQLite.
+- Limit duplicate and excessive application requests.
+
+### Scoring and decisions
+
+- Validate answers and experience against the exact advert schema.
+- Compute and retain keyword, experience, screening and completeness components.
+- Show scores only to recruiters; candidates receive an acknowledgement.
+- Require a human shortlist or rejection decision.
+- Rebuild and verify the stored score before recording a decision or hire.
+- Never include the cover letter in scoring.
+
+The scoring policy is deterministic and intentionally simple. Keyword points come from case-insensitive substring matches in extracted CV text. Experience points are capped at each skill's target. Screening points come from normalised exact matches. Completeness counts nonblank answers and CV text. Scores assist review and never make hiring decisions.
+
+### Hiring, privacy and retention
+
+- Hire only shortlisted candidates.
+- Create immutable people records with provenance to the source application.
+- Close the advert when its requisition reaches the approved headcount.
+- Let candidates withdraw their own applications.
+- Let recruiters erase an application with a reason.
+- Anonymise applications automatically after the configured retention period.
+- Delete the stored PDF and clear the name, email, extracted CV text, cover letter, answers and review notes during erasure.
+- Retain non-identifying score and audit evidence.
+
+SQLite uses `secure_delete` and a rollback journal. Databases created by earlier versions are vacuumed once during migration to remove recoverable content from free pages. This does not erase external copies, filesystem snapshots, backups or PDFs already downloaded by a recruiter.
+
+## Architecture
+
+```text
+React interface
+      |
+TypeScript HTTP API ---- PDF text extraction
+      |                         |
+      |                  untrusted text
+      v                         v
+SQLite <------------ Idris workflow worker
+                         |
+        TransitionC + IntakeC + AssessC + HireKC
+```
+
+The TypeScript API handles HTTP, identity headers, PDF parsing, resource limits and SQLite transactions. Every protected workflow write is checked by the compiled Idris worker before it is committed.
+
+The worker receives one requisition aggregate and one proposed command through the versioned `recruitment-kernel-v5` protocol. It replays the audit history, verifies the current state and routes the command through:
+
+- `TransitionC` for requisition transitions and publication;
+- `IntakeC` for application validation, CV extraction input and scoring;
+- `AssessC` for recorded human decisions; and
+- `HireKC` for hires with application provenance.
+
+SQLite atomically commits state, audit evidence and idempotent responses. Generation checks reject concurrent stale writes. Database constraints and triggers freeze adverts, scores, documents and people records while allowing the defined erasure operation.
+
+The PDF parser runs in the API process. Size, page and request-rate limits reduce resource use, but there is no parser process isolation or hard timeout.
+
+## Compiler-enforced relationships
+
+The core uses mathematical containers: each prompt determines its permitted reply type, and handlers compose through `Seq`, `Sum`, `Tensor` and `Product`.
+
+Examples of enforced relationships:
+
+- `Approved r` is required to publish an advert for requisition `r`.
+- `Application a` retains the exact advert `a` and its question and skill definitions.
+- `Score a` retains the application scored against advert `a`.
+- a transition reply identifies the targeted requisition and its next generation;
+- a hire returns an employee together with equality evidence linking it to the scored application.
+
+[`SwapQuestions.idr`](tests/compile-fail/SwapQuestions.idr) demonstrates the central failure case: an application created for one question set cannot be reused after the advert's questions change, even if the numeric advert identifier is unchanged.
+
+The compiler verifies these relationships inside the typed interfaces. It does not verify that stored facts are truthful, that a user is who they claim to be, that a hiring decision is fair or that an adapter correctly implements its contract. Those remain runtime, identity, policy and persistence responsibilities. See [Architecture](docs/architecture.md#compiler-guarantees-and-their-limits).
+
+## Test and verification commands
+
+```sh
+make test       # Idris checks, compiler fixtures, CLI smoke test and API integration tests
+make e2e        # production build and Playwright browser tests
+make demo       # compile and run the command-line example
+make check      # type-check the Idris library
+make lint       # repository hygiene checks
+```
+
+The current suites contain:
+
+- 243 Idris runtime checks;
+- one compiler-positive fixture;
+- 20 compiler-negative fixtures checked for their expected diagnostics;
+- 42 HTTP integration tests; and
+- eight Playwright browser journeys.
+
+Coverage includes workflow transitions, audit replay, self-review, stale and concurrent writes, idempotency, tenant isolation, frozen adverts, scoring, recorded decisions, hires, migrations, PDF validation and retrieval, keyboard interaction, withdrawal, retention and raw-database erasure checks.
+
+Tests require the compiler version in `toolchain.env`. To select an existing compiler directly:
 
 ```sh
 IDRIS2=/absolute/path/to/idris2/bin/idris2 make test
 ```
 
-The compiler version must match `toolchain.env`. On Debian/Ubuntu, install bootstrap prerequisites and build a project-local compiler if needed:
+To build the pinned compiler locally on Debian or Ubuntu:
 
 ```sh
 sudo apt-get install chezscheme libgmp-dev build-essential curl python3
@@ -84,30 +185,40 @@ make bootstrap
 make test
 ```
 
-The bootstrap uses the pinned compiler commit and verified archive checksum. Use a checkout path without whitespace for the upstream Make build. Existing compiler installations work with this project in paths containing spaces. `scripts/idris` prefers an explicit `IDRIS2`, then `build/toolchain/bin/idris2`, then `idris2` on `PATH`. Initial bootstrap needs network access; tests and the demo do not need network or credentials.
+The initial bootstrap requires network access. Tests and the application do not require external services or credentials.
 
-Expected demo: reference `1`, advert `1`, keywords `5`, experience `18`, screening `20`, completeness `3`, total **46**, audit evidence naming advert, application and scoring policy, and a hire whose employee record names advert `1`, application `1`. The CLI exits after the example; it is not a web service.
+## Repository layout
 
-## Verified locally
-
-Core verification is **243 runtime checks**, one positive compiler fixture, and **20 invalid fixtures** with their expected diagnostics. The 42-test HTTP integration suite covers the complete rework/approval path, stale writes, Unicode and multiline transport, durable restart, Idris transitions, invalid fields, retry idempotency, cross-process duplicate delivery, tenant/owner isolation, migration from a Slice 1 database, self-review refusal, refusal of a directly tampered database row, advert publication and freezing, candidate-shaped responses, consent and duplicate applications, restart-then-apply, recruiter score workings, recorded decisions, refusal to review a score the policy cannot reproduce, withdrawal and erasure, retention, idempotency expiry, rate limiting, hires with provenance, PDF CV uploads (refused, malformed and abandoned files, private retrieval, cover letters), approvals bound to every requisition field, and erased data absent from the database file itself. Eight Playwright journeys drive the built UI in a real browser, including draft through rework to approval, a terminal decline, publish → apply with a PDF → decide → withdraw → hire with keyboard-only use of the applicant panel, plain messages for unusable CV files, and unsaved draft edits blocking submission. `make test` runs both suites. Logs are regenerated under `build/verification/logs/`.
-
-GitHub Actions bootstraps the pinned compiler from source on Ubuntu 24.04 with Node 24, then runs `make test`, the production build and the Playwright journeys in Chromium. All three slice branches passed on 2026-09-24 (about 10 minutes each, mostly the compiler bootstrap). No Docker tooling is included: “container” here exclusively means the mathematical abstraction from the papers.
-
-## Layout
-
-| Location | Responsibility |
+| Location | Contents |
 |---|---|
-| `src/Recruitment/Container.idr` | Containers, handlers, agents and four combinators |
-| `src/Recruitment/Core/` | Pure domain types, evidence, replay, validation, scoring, hire |
-| `src/Recruitment/Application/Spine.idr` | Typed interfaces, atomic agents, composed spine, high-level handler |
-| `src/Recruitment/Application/` | Stateful use cases, shared scoring, repository/extraction ports |
-| `src/Recruitment/Adapters/` | In-memory repositories, the kernel and transition containers, CV extraction leaves, versioned wire codec |
-| `src/WorkflowMain.idr`, `apps/` | Idris worker executable, TypeScript API with SQLite, React UI |
-| `src/Recruitment/Example.idr`, `src/Main.idr` | Composition root and CLI |
-| `tests/` | Runtime/invariant checks and compiler-positive/negative fixtures |
-| `docs/` | Architecture, source interpretation, verification and ADRs |
+| `src/Recruitment/Container.idr` | Container definitions, handlers, agents and combinators |
+| `src/Recruitment/Core/` | Pure domain types, validation, evidence, scoring and hiring |
+| `src/Recruitment/Application/` | Composed recruitment spine, use cases and ports |
+| `src/Recruitment/Adapters/` | Kernel containers, repositories, extraction leaves and wire codec |
+| `src/WorkflowMain.idr` | Compiled workflow worker entry point |
+| `apps/api/` | TypeScript HTTP server, SQLite adapter and PDF extraction |
+| `apps/web/` | React interface |
+| `packages/contracts/` | Shared TypeScript request and response types |
+| `tests/` | Idris, browser and compiler fixtures |
+| `docs/` | Architecture, slice documentation, testing notes and decisions |
 
-Start with [the container walkthrough](docs/containers.md), [the Slice 2 design](docs/slice-2.md), [Slice 2.1](docs/slice-2-1.md), [Slice 3](docs/slice-3.md), [Slice 4](docs/slice-4.md), [the invalid question edit](tests/compile-fail/SwapQuestions.idr), and [the guarantee boundary](docs/architecture.md). The design note asked for a Haskell model with a LaTeX decisions document. [ADR 001](docs/adr/001-idris2.md) records the choice of Idris 2, which the note's Q5 left open: the key index is an advert *value*, not a phantom ID, and the hire morphism's provenance equality needs full dependent types as well. The decisions log is kept as Markdown ADRs in [`docs/adr/`](docs/adr/).
+Recommended technical references:
 
-The system has no legacy integration, paid API, real authentication, public candidate portal, or automated hiring decision. Since Slice 4 the web app reads text from an uploaded PDF at the extraction leaf (no OCR); a model-backed extractor can replace it through the same typed port. Sign-in is still the demo role switch; real authentication is deferred. The hire morphism runs end to end: a hire creates a people record whose provenance is typed in Idris and immutable in the database.
+- [Container and recruitment-spine walkthrough](docs/containers.md)
+- [Architecture and guarantee boundaries](docs/architecture.md)
+- [Verification details](docs/testing.md)
+- [PDF CV and cover-letter implementation](docs/slice-4.md)
+- [Architecture decision records](docs/adr/)
+
+## Current limitations
+
+- No authentication, password management, sessions or identity provider.
+- No production public careers deployment.
+- No PostgreSQL or database-enforced row-level tenant isolation.
+- No email delivery or transactional outbox.
+- No OCR or CV formats other than PDF.
+- No isolated PDF worker or parser timeout.
+- No automatic backup management or erasure of operator-created copies.
+- No automated hiring decision.
+
+The original brief requested a typed model of the five-link recruitment spine. The repository also implements the hire transition, local persistence and a complete browser workflow. [ADR 001](docs/adr/001-idris2.md) records the use of Idris 2 instead of Haskell because applications are indexed by complete advert values and hire provenance uses dependent equality.
