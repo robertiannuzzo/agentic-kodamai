@@ -16,7 +16,10 @@ async function applyAs(
   await identity.fill(email);
   await identity.press("Enter");
   await page.getByRole("navigation", { name: "Open roles" }).getByRole("button", { name: /Compiler Engineer/ }).click();
-  await page.getByLabel("Full name").fill(details.name);
+  const [first, ...rest] = details.name.split(" ");
+  await page.getByLabel("First name").fill(first ?? "");
+  await page.getByLabel("Last name").fill(rest.join(" "));
+  await expect(page.getByLabel("Email", { exact: true })).toHaveValue(email);
   await page.getByLabel("Can you work in the UK time zone?").fill(details.answers[0]);
   await page.getByLabel("Do you use typed programming?").fill(details.answers[1]);
   await page.getByLabel("idris", { exact: true }).fill(details.years[0]);
@@ -67,7 +70,7 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await page.getByLabel("Target years", { exact: true }).nth(1).fill("3");
   await page.getByRole("button", { name: "Publish advert" }).click();
   await expect(page.getByTestId("stage")).toHaveText("Advertising");
-  await expect(page.getByText("Frozen", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("stage")).toHaveText("Advertising");
   await expect(page.getByRole("button", { name: "Publish advert" })).toHaveCount(0);
 
   // Two candidates apply; the candidate view never shows expected answers or weights.
@@ -107,7 +110,7 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(detail).toContainText("keywords5");
   await expect(detail).toContainText("experience18");
   await expect(detail).toContainText("policy:recruitment-score-v1");
-  await expect(page.getByText("They are not a hiring decision", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("The score is a guide", { exact: false }).first()).toBeVisible();
 
   // A person decides: shortlist Ada; rejecting Grace needs a reason.
   await detail.getByLabel("Private note").fill("Strong compiler background.");
@@ -148,7 +151,7 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(page.getByRole("list", { name: "Recruitment chain" })).toContainText("1 of 1");
   await page.getByRole("tab", { name: /People/ }).click();
   const provenance = page.getByRole("list", { name: "Provenance of Ada Lovelace" });
-  await expect(provenance).toContainText("46 under recruitment-score-v1");
+  await expect(provenance).toContainText("Score 46");
   await expect(provenance).toContainText("disposition:shortlist");
   await expect(provenance).toContainText("application:1");
 

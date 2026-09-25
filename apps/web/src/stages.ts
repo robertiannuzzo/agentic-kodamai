@@ -1,4 +1,5 @@
 import type { AuditEntry, DemoRole, RequisitionCase } from "../../../packages/contracts/src/index";
+import { displayName } from "./format";
 
 /** What a requisition is, as shown to people. "Filled" is derived from hires. */
 export type DisplayStage = RequisitionCase["stage"] | "filled";
@@ -74,7 +75,7 @@ export function railSteps(row: RequisitionCase, applications: number | null): Ra
           : stage === "needs-rework"
             ? "Back with requester"
             : beyondApproval
-              ? `By ${approved?.actor.replace(/@.*/u, "") ?? "approver"}`
+              ? `By ${approved === undefined ? "approver" : displayName(approved.actor)}`
               : stage === "awaiting-review"
                 ? "Awaiting review"
                 : "Not yet",
@@ -84,7 +85,7 @@ export function railSteps(row: RequisitionCase, applications: number | null): Ra
     },
     {
       key: "advert",
-      label: "Advert frozen",
+      label: "Advertised",
       detail:
         row.advert === null
           ? stage === "approved"
@@ -141,7 +142,7 @@ export function describeEvidence(entry: AuditEntry): string {
     case "revised":
       return `Revised to revision ${entry.revision}`;
     case "advert-created":
-      return "Advert published and frozen";
+      return "Advert published";
     default:
       return entry.detail;
   }

@@ -90,7 +90,8 @@ test("a slow application submitted as one candidate never marks the next candida
   await email.fill("first@example.test");
   await email.press("Enter");
   await page.getByRole("navigation", { name: "Open roles" }).getByRole("button", { name: /Mutation Race Tester/ }).click();
-  await page.getByLabel("Full name").fill("First Candidate");
+  await page.getByLabel("First name").fill("First");
+  await page.getByLabel("Last name").fill("Candidate");
   await page.getByLabel("Ready?").fill("yes");
   await page.getByLabel("testing", { exact: true }).fill("1");
   await page.getByLabel("CV").fill("Testing");
@@ -104,4 +105,38 @@ test("a slow application submitted as one candidate never marks the next candida
   await page.waitForTimeout(2000);
   await expect(page.getByRole("button", { name: "Submit application" })).toBeVisible();
   await expect(page.getByText("Application received")).toHaveCount(0);
+});
+
+test("the email entered on the form becomes the applicant's identity", async ({ page, request }) => {
+  let row = await api(request, "requester", "requester@kodamai.test", "/api/requisitions", {
+    fields: { role: "Email Field Tester", department: "QA", headcount: 1, budgetMinor: 5000000, justification: "Test the email field." }
+  });
+  row = await api(request, "requester", "requester@kodamai.test", `/api/requisitions/${row.reference}/submit`, { generation: row.generation });
+  row = await api(request, "approver", "approver@kodamai.test", `/api/requisitions/${row.reference}/review`, {
+    generation: row.generation,
+    decision: "approve",
+    reason: ""
+  });
+  await api(request, "recruiter", "recruiter@kodamai.test", `/api/requisitions/${row.reference}/advert`, {
+    generation: row.generation,
+    questions: [{ prompt: "Ready?", expected: "yes" }],
+    skills: [{ keyword: "testing", weight: 1, targetYears: 1 }]
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Demo role").getByRole("button", { name: "Candidate", exact: true }).click();
+  await page.getByRole("navigation", { name: "Open roles" }).getByRole("button", { name: /Email Field Tester/ }).click();
+  await expect(page.getByLabel("Email", { exact: true })).toHaveValue("candidate@example.test");
+  await page.getByLabel("First name").fill("Grace");
+  await page.getByLabel("Last name").fill("Field");
+  await page.getByLabel("Email", { exact: true }).fill("grace.field@example.test");
+  await page.getByLabel("Ready?").fill("yes");
+  await page.getByLabel("testing", { exact: true }).fill("1");
+  await page.getByLabel("CV").fill("Testing");
+  await page.getByLabel("I have read how my application will be used.").check();
+  await page.getByRole("button", { name: "Submit application" }).click();
+
+  await expect(page.getByLabel("Candidate email")).toHaveValue("grace.field@example.test");
+  await page.getByRole("navigation", { name: "Open roles" }).getByRole("button", { name: /Email Field Tester/ }).click();
+  await expect(page.getByRole("status")).toContainText("Application received");
 });

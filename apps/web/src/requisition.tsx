@@ -31,7 +31,7 @@ import {
   updateDraft,
   type DemoIdentity
 } from "./api";
-import { formatMoney, formatTime, reference, type DisplayCurrency } from "./format";
+import { displayName, formatMoney, formatTime, reference, type DisplayCurrency } from "./format";
 import { describeError } from "./messages";
 import { AdvertPanel, ApplicantsBoard, PeoplePanel, PublishAdvertForm } from "./recruiting";
 import {
@@ -212,11 +212,11 @@ function EvidenceRail({ history }: { history: AuditEntry[] }) {
     <aside className="evidence-rail" aria-labelledby="evidence-title">
       <div className="rail-heading">
         <div>
-          <p className="eyebrow">Evidence</p>
-          <h2 id="evidence-title">Audit timeline</h2>
+          <p className="eyebrow">History</p>
+          <h2 id="evidence-title">What happened</h2>
         </div>
         <button className="text-button" aria-pressed={raw} onClick={() => setRaw((value) => !value)}>
-          {raw ? "Plain view" : "Raw evidence"}
+          {raw ? "Hide details" : "Technical details"}
         </button>
       </div>
       <ol className="timeline" aria-label="Audit timeline">
@@ -231,7 +231,7 @@ function EvidenceRail({ history }: { history: AuditEntry[] }) {
                 <strong data-testid="event">{entry.event.replaceAll("-", " ")}</strong>
                 <p className={raw ? "raw" : ""}>{raw ? entry.detail : describeEvidence(entry)}</p>
                 <small title={entry.actor}>
-                  {entry.actor.replace(/@.*/u, "")} · rev {entry.revision} · {formatTime(entry.tick)}
+                  {displayName(entry.actor)} · rev {entry.revision} · {formatTime(entry.tick)}
                 </small>
               </div>
             </li>
@@ -303,12 +303,6 @@ export function RequisitionView({
             <h1>{row.role}</h1>
           </div>
           <div className="chips">
-            {row.advert === null ? null : (
-              <span className="chip sky">
-                <Lock size={13} aria-hidden="true" />
-                Frozen
-              </span>
-            )}
             <span className={`chip ${stageTones[stage]}`} data-testid="stage">
               {stageLabels[stage]}
             </span>
@@ -337,7 +331,7 @@ export function RequisitionView({
           </div>
           <div>
             <dt>Requested by</dt>
-            <dd>{row.requesterId.replace(/@.*/u, "")}</dd>
+            <dd>{displayName(row.requesterId)}</dd>
           </div>
         </dl>
         <StageRail steps={railSteps(row, records?.length ?? null)} />
@@ -385,7 +379,7 @@ export function RequisitionView({
                     <div className="submit-row">
                       <div>
                         <strong>Ready for review?</strong>
-                        <p>Submission freezes revision 0 and records the evidence an approver needs.</p>
+                        <p>Once submitted, it can't be edited unless the approver asks for changes.</p>
                       </div>
                       <button
                         className="button primary"
@@ -414,7 +408,7 @@ export function RequisitionView({
 
                 {role === "approver" && row.stage === "awaiting-review" && row.requesterId === identity.actor ? (
                   <section className="panel notice-panel">
-                    <p className="eyebrow">Separation of duties</p>
+                    <p className="eyebrow">Needs another approver</p>
                     <p>You submitted this requisition, so another approver must review it.</p>
                   </section>
                 ) : null}
@@ -439,7 +433,7 @@ export function RequisitionView({
               ) : (
                 <PublishAdvertForm
                   busy={busy}
-                  onPublish={(advert) => perform(() => publishAdvert(identity, row, advert), "Advert published and frozen")}
+                  onPublish={(advert) => perform(() => publishAdvert(identity, row, advert), "Advert published")}
                 />
               )
             ) : null}

@@ -14,7 +14,7 @@ import {
   type AdvertDraft,
   type DemoIdentity
 } from "./api";
-import { employeeReference, initials } from "./format";
+import { displayName, employeeReference, initials } from "./format";
 import { describeError } from "./messages";
 
 const blankQuestion = { prompt: "", expected: "" };
@@ -42,8 +42,7 @@ export function PublishAdvertForm({ busy, onPublish }: { busy: boolean; onPublis
       <p className="eyebrow">Recruiter action</p>
       <h2>Publish the advert</h2>
       <p className="lede">
-        Questions and weighted skills freeze at publication. Every application and score is typed by this exact
-        advert, so there is no edit afterwards.
+        Once published, the questions and skills can't be changed, so every applicant is scored the same way.
       </p>
       <form className="form" onSubmit={(event) => void submit(event)}>
         <fieldset className="group">
@@ -165,13 +164,12 @@ export function AdvertPanel({ advert }: { advert: AdvertSchema }) {
       <div className="panel-heading">
         <div>
           <p className="eyebrow">Published advert</p>
-          <h2>Frozen schema</h2>
+          <h2>Questions and skills</h2>
         </div>
         <Lock size={18} aria-hidden="true" className="muted-icon" />
       </div>
       <p className="lede">
-        Changing a question underneath live applications does not compile (<code>SwapQuestions.idr</code>), the
-        database refuses the update, and a changed stored schema fails its publication fingerprint on replay.
+        These can't be changed now the advert is live, so everyone is scored against the same questions.
       </p>
       <table className="data-table">
         <thead>
@@ -303,7 +301,7 @@ function HireControl({
       <p className="eyebrow">
         <IdCard size={13} aria-hidden="true" /> Hire
       </p>
-      <p className="hint">Hiring creates a people record that carries proof of this application.</p>
+      <p className="hint">This adds them to your people records, linked to this application.</p>
       <div className="form-grid">
         <label>
           Legal name
@@ -339,7 +337,7 @@ function EraseControl({ busy, onErase }: { busy: boolean; onErase(reason: string
         Reason for erasure
         <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Erasure request by email" />
       </label>
-      <p className="hint">Removes the name, email, CV text, answers and review notes. The score and evidence remain.</p>
+      <p className="hint">Removes their name, email, CV, answers and notes. The score and decision are kept anonymously.</p>
       <div className="actions">
         <button className="button danger" disabled={busy || reason.trim() === ""} onClick={() => void onErase(reason)}>
           Erase personal data
@@ -431,7 +429,7 @@ function ApplicantDrawer({
             </div>
           ))}
         </dl>
-        <p className="hint">Policy {record.policyVersion}. Scores support review; they are not a hiring decision.</p>
+        <p className="hint">The score is a guide. You make the decision.</p>
 
         {failed === null ? null : (
           <p className="inline-error" role="alert">
@@ -458,7 +456,7 @@ function ApplicantDrawer({
             </p>
             <p>
               <strong>{record.review.disposition === "shortlist" ? "Shortlisted" : "Rejected"}</strong> by{" "}
-              {record.review.evidence.actor}
+              {displayName(record.review.evidence.actor)}
             </p>
             {record.review.reason === "" ? null : <p>Reason: {record.review.reason}</p>}
             {record.review.note === "" ? null : <p>Note: {record.review.note}</p>}
@@ -511,12 +509,11 @@ function ApplicantDrawer({
           </>
         ) : (
           <p className="erased-line">
-            Personal data erased: {record.erasureReason}. The score and evidence are kept without identifying the
-            candidate.
+            Personal data erased ({record.erasureReason}). The score and decision are kept anonymously.
           </p>
         )}
 
-        <p className="evidence-line">Scoring evidence: {record.evidence.detail}</p>
+        <p className="evidence-line">Reference: {record.evidence.detail}</p>
         {record.erasedAt === null ? (
           <EraseControl
             busy={busy}
@@ -550,7 +547,7 @@ export function ApplicantsBoard({
     <section className="panel" aria-labelledby="applications-title">
       <div className="panel-heading">
         <div>
-          <p className="eyebrow">Human review</p>
+          <p className="eyebrow">Review</p>
           <h2 id="applications-title">Applications</h2>
         </div>
         <div className="legend" aria-label="Score components">
@@ -563,8 +560,8 @@ export function ApplicantsBoard({
         </div>
       </div>
       <p className="lede">
-        Ranked by a deterministic, versioned policy. They are not a hiring decision: a person records every decision,
-        and only a shortlisted application can be hired.
+        Ranked by score. The score is a guide, not a decision: you decide who to shortlist, and only shortlisted
+        applicants can be hired.
       </p>
       {loadError !== null ? <p role="alert">{loadError}</p> : null}
       {records === null && loadError === null ? <p className="empty">Loading…</p> : null}
@@ -632,11 +629,10 @@ export function PeoplePanel({ identity, reference, hired }: { identity: DemoIden
 
   return (
     <section className="panel" aria-labelledby="people-title">
-      <p className="eyebrow">People records</p>
+      <p className="eyebrow">People</p>
       <h2 id="people-title">Hired from this requisition</h2>
       <p className="lede">
-        Each record exists only as the result of hiring one shortlisted application, and carries proof of where it
-        came from.
+        Everyone hired for this role, and how they were chosen.
       </p>
       <ul className="people-list" aria-label="Hired people">
         {people.map((person) => (
@@ -655,19 +651,17 @@ export function PeoplePanel({ identity, reference, hired }: { identity: DemoIden
             <ol className="provenance" aria-label={`Provenance of ${person.legalName}`}>
               <li>
                 <span className="eyebrow">Scored</span>
-                <span>
-                  {person.provenance.total} under {person.provenance.policyVersion}
-                </span>
+                <span>Score {person.provenance.total}</span>
                 <code>{person.provenance.scoring.detail}</code>
               </li>
               <li>
                 <span className="eyebrow">Shortlisted</span>
-                <span>by {person.provenance.shortlist.actor}</span>
+                <span>by {displayName(person.provenance.shortlist.actor)}</span>
                 <code>{person.provenance.shortlist.detail}</code>
               </li>
               <li>
                 <span className="eyebrow">Hired</span>
-                <span>by {person.evidence.actor}</span>
+                <span>by {displayName(person.evidence.actor)}</span>
                 <code>{person.evidence.detail}</code>
               </li>
             </ol>
