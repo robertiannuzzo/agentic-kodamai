@@ -19,6 +19,14 @@ export interface DemoIdentity {
   tenantId: string;
 }
 
+function identityHeaders(identity: DemoIdentity): Record<string, string> {
+  return {
+    "x-demo-actor": identity.actor,
+    "x-demo-role": identity.role,
+    "x-demo-tenant": identity.tenantId
+  };
+}
+
 async function request<T>(
   identity: DemoIdentity,
   path: string,
@@ -28,10 +36,9 @@ async function request<T>(
   const response = await fetch(path, {
     ...init,
     headers: {
-      "content-type": "application/json",
-      "x-demo-actor": identity.actor,
-      "x-demo-role": identity.role,
-      "x-demo-tenant": identity.tenantId,
+      // A form upload sets its own multipart content type and boundary.
+      ...(init.body instanceof FormData ? {} : { "content-type": "application/json" }),
+      ...identityHeaders(identity),
       ...(mutating ? { "idempotency-key": crypto.randomUUID() } : {}),
       ...init.headers
     }
@@ -130,12 +137,25 @@ export function listOpenAdverts(identity: DemoIdentity): Promise<OpenAdvert[]> {
 export function applyToAdvert(
   identity: DemoIdentity,
   reference: number,
-  submission: ApplicationSubmission
+  submission: ApplicationSubmission,
+  cv: File
 ): Promise<ApplicationAcknowledgement> {
-  return request(identity, `/api/adverts/${reference}/applications`, {
-    method: "POST",
-    body: JSON.stringify(submission)
+  const form = new FormData();
+  form.append("application", JSON.stringify(submission));
+  form.append("cv", cv, cv.name);
+  return request(identity, `/api/adverts/${reference}/applications`, { method: "POST", body: form });
+}
+
+/** The original CV. It is private, so it is fetched with the recruiter's identity. */
+export async function fetchCv(identity: DemoIdentity, record: ApplicationRecord): Promise<Blob> {
+  const response = await fetch(`/api/requisitions/${record.reference}/applications/${record.applicationId}/cv`, {
+    headers: identityHeaders(identity)
   });
+  if (!response.ok) {
+    const value = (await response.json().catch(() => ({}))) as Partial<ApiError>;
+    throw new Error(value.error ?? "request-failed");
+  }
+  return response.blob();
 }
 
 export function reviewApplication(

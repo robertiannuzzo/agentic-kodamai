@@ -63,3 +63,10 @@ export function writePreference(key: string, value: string): void {
     // Storage can be unavailable; the choice still applies for this session.
   }
 }
+
+/** A file size as people read it: "820 KB", "1.4 MB". */
+export function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

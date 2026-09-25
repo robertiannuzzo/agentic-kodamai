@@ -149,9 +149,14 @@ export interface OpenAdvert {
   retentionDays: number;
 }
 
+/**
+ * The `application` part of a multipart application. The CV itself travels
+ * alongside it as the `cv` file part: one PDF, at most 5 MB.
+ */
 export interface ApplicationSubmission {
   candidateName: string;
-  cvText: string;
+  /** Optional plain text, at most 5,000 characters. Shown to recruiters, never scored. */
+  coverLetterText?: string;
   /** The candidate has read the privacy notice (lawful basis: steps before a contract). */
   acknowledgedPrivacyNotice: boolean;
   answers: Array<{ questionId: number; answer: string }>;
@@ -194,7 +199,11 @@ export interface ApplicationRecord {
   candidateName: string;
   candidateActor: string;
   cvVersion: string;
+  /** Text read from the CV: what was scored, kept for replay. */
   cvText: string;
+  /** The original PDF can be opened from the application's `cv` endpoint. */
+  hasCvDocument: boolean;
+  coverLetterText: string | null;
   answers: Array<{ questionId: number; prompt: string; expected: string; answer: string }>;
   experience: Array<{ skillId: number; keyword: string; weight: number; targetYears: number; years: number }>;
   breakdown: ScoreBreakdown;

@@ -1856,3 +1856,74 @@ label.checkbox input {
     width: calc(100vw - 16px);
   }
 }
+
+/* CV upload and cover letter */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The chosen file's name and size are shown below, so hide the browser's copy. */
+.file-input {
+  color: transparent;
+  cursor: pointer;
+  padding: 8px;
+}
+
+.file-input::file-selector-button {
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  margin-right: 12px;
+  padding: 6px 12px;
+}
+
+.file-chosen {
+  align-items: center;
+  color: var(--text);
+  display: flex;
+  font-size: 14px;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field-help {
+  color: var(--text-3);
+  font-size: 13px;
+  margin: 0;
+}
+
+.field-help.counter {
+  align-self: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+.field-help.counter.over {
+  color: var(--rose);
+}
+
+.field-error {
+  color: var(--rose);
+  font-size: 13.5px;
+  margin: 0;
+}
+
+.section-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}

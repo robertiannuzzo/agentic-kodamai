@@ -69,6 +69,8 @@ IntakeChain = Seq ValidateC (Sum StopC (Seq ExtractionC (Sum StopC ApplicationTa
 
 `intakeChainAgent` reuses `applicationAgent` and `scoreAgent`, and takes the extraction leaf as a parameter, so the model sits exactly where the papers put it. See [the Slice 2 design](slice-2.md) and ADR 010.
 
+Slice 4 swaps what feeds that leaf. Candidates upload a PDF, and the API reads its text with pdf.js before calling the kernel. PDF parsing is untrusted work at the edge: its only output is the string `storedDocument` answers with, for a locator and a version that is now the SHA-256 of the PDF bytes. Nothing above the leaf changes. The kernel, the typed intake chain and the scoring policy are the same code, and the same inputs still score the same. See [Slice 4](slice-4.md).
+
 ## Human decisions
 
 Slice 2.1 adds `AssessC` as the kernel's third branch: `KernelC = Sum TransitionC (Sum IntakeC AssessC)`. Its handler delegates to `Seq IntakeC (Sum StopC VerdictC)`, re-running the stored inputs through the intake chain before a person's decision is recorded against the re-derived `Score a`. See [Slice 2.1](slice-2-1.md).

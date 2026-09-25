@@ -24,7 +24,7 @@ async function reviewed(running: RunningApplication): Promise<number> {
       role: "candidate",
       actor,
       method: "POST",
-      body: application({ candidateName: name })
+      form: application({ candidateName: name })
     });
   }
   const decide = (id: number, body: Record<string, unknown>) =>
@@ -95,7 +95,7 @@ test("hiring a shortlisted application creates a people record with provenance",
       role: "candidate",
       actor: "new@example.test",
       method: "POST",
-      body: application()
+      form: application()
     });
     assert.equal(late.status, 409);
 

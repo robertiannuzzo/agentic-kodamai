@@ -22,7 +22,7 @@ It is one of **20 compile-fail fixtures**, each checked for its expected diagnos
 
 **What the types do and do not guarantee.** An advert cannot exist without approval of the exact requisition revision. Applications and scores are indexed by the exact advert, so they cannot be moved to another advert. A reviewer cannot approve their own submission. Persisted approvals are rebuilt only by replaying a legal audit trail. None of this makes the stored facts true: as section 6 of the design note says, the types guarantee the wiring, not that the components are honest. The [guarantee table](docs/architecture.md#compiler-guarantees-and-their-limits) draws the line precisely.
 
-**Try it:** `make test`, then `npm install && npm run build && npm start` and open `http://127.0.0.1:3001`. Raise a requisition as the requester, approve it as the approver, publish an advert as the recruiter, apply as one or more candidates (change the "Applying as" email), then review the ranked applications as the recruiter.
+**Try it:** `make test`, then `npm install && npm run build && npm start` and open `http://127.0.0.1:3001`. Raise a requisition as the requester, approve it as the approver, publish an advert as the recruiter, apply as one or more candidates with a PDF CV (change the "Applying as" email), then review the ranked applications as the recruiter.
 
 ## Implemented product slice
 
@@ -34,11 +34,11 @@ Slice 1 adds a usable requester/approver web workflow around the Idris core:
 - revise and resubmit the same requisition;
 - work an approver inbox of requisitions awaiting review;
 - publish a frozen advert with screening questions and weighted skills from a recruiter queue;
-- apply as a candidate with consent, answers, experience and CV text, seeing only an acknowledgement;
-- review applications ranked by score, with the breakdown, answers against expected answers and scoring evidence;
+- apply as a candidate with a PDF CV, an optional cover letter, answers and experience, acknowledging the privacy notice and seeing only an acknowledgement;
+- review applications ranked by score, with the breakdown, answers against expected answers, scoring evidence, the cover letter and the original CV;
 - record a shortlist or reasoned rejection as kernel evidence, after the kernel re-derives the stored score;
 - hire a shortlisted candidate, creating a people record linked to the scored application and both decisions; the requisition fills at its headcount;
-- withdraw (candidate) or erase (recruiter) an application's personal data, with automatic anonymisation after a retention period;
+- withdraw (candidate) or erase (recruiter) an application's personal data, including its CV file and cover letter, with automatic anonymisation after a retention period;
 - enforce demo requester/approver permissions, separation of duties (no self-review) and optimistic generations;
 - scope requisitions by tenant and requester ownership;
 - persist authoritative transactional state and append-only audit history in SQLite;
@@ -90,7 +90,7 @@ Expected demo: reference `1`, advert `1`, keywords `5`, experience `18`, screeni
 
 ## Verified locally
 
-Core verification is **239 runtime checks**, one positive compiler fixture, and **20 invalid fixtures** with their expected diagnostics. The 20-test HTTP integration suite covers the complete rework/approval path, stale writes, Unicode and multiline transport, durable restart, Idris transitions, invalid fields, retry idempotency, cross-process duplicate delivery, tenant/owner isolation, migration from a Slice 1 database, self-review refusal, refusal of a directly tampered database row, advert publication and freezing, candidate-shaped responses, consent and duplicate applications, restart-then-apply, recruiter score workings, recorded decisions, refusal to review a score the policy cannot reproduce, withdrawal and erasure, retention, idempotency expiry, rate limiting, and hires with provenance. Three Playwright journeys drive the built UI in a real browser: draft through rework to approval, a terminal decline, and publish → apply → decide → withdraw → hire. `make test` runs both suites. Logs are regenerated under `build/verification/logs/`.
+Core verification is **239 runtime checks**, one positive compiler fixture, and **20 invalid fixtures** with their expected diagnostics. The 33-test HTTP integration suite covers the complete rework/approval path, stale writes, Unicode and multiline transport, durable restart, Idris transitions, invalid fields, retry idempotency, cross-process duplicate delivery, tenant/owner isolation, migration from a Slice 1 database, self-review refusal, refusal of a directly tampered database row, advert publication and freezing, candidate-shaped responses, consent and duplicate applications, restart-then-apply, recruiter score workings, recorded decisions, refusal to review a score the policy cannot reproduce, withdrawal and erasure, retention, idempotency expiry, rate limiting, hires with provenance, and PDF CV uploads: refused files, private retrieval, cover letters and their erasure. Seven Playwright journeys drive the built UI in a real browser, including draft through rework to approval, a terminal decline, publish → apply with a PDF → decide → withdraw → hire, and plain messages for unusable CV files. `make test` runs both suites. Logs are regenerated under `build/verification/logs/`.
 
 GitHub Actions bootstraps the pinned compiler from source on Ubuntu 24.04 with Node 24, then runs `make test`, the production build and the Playwright journeys in Chromium. All three slice branches passed on 2026-09-24 (about 10 minutes each, mostly the compiler bootstrap). No Docker tooling is included: “container” here exclusively means the mathematical abstraction from the papers.
 
@@ -108,6 +108,6 @@ GitHub Actions bootstraps the pinned compiler from source on Ubuntu 24.04 with N
 | `tests/` | Runtime/invariant checks and compiler-positive/negative fixtures |
 | `docs/` | Architecture, source interpretation, verification and ADRs |
 
-Start with [the container walkthrough](docs/containers.md), [the Slice 2 design](docs/slice-2.md), [Slice 2.1](docs/slice-2-1.md), [Slice 3](docs/slice-3.md), [the invalid question edit](tests/compile-fail/SwapQuestions.idr), and [the guarantee boundary](docs/architecture.md). The design note asked for a Haskell model with a LaTeX decisions document. [ADR 001](docs/adr/001-idris2.md) records the choice of Idris 2, which the note's Q5 left open: the key index is an advert *value*, not a phantom ID, and the hire morphism's provenance equality needs full dependent types as well. The decisions log is kept as Markdown ADRs in [`docs/adr/`](docs/adr/).
+Start with [the container walkthrough](docs/containers.md), [the Slice 2 design](docs/slice-2.md), [Slice 2.1](docs/slice-2-1.md), [Slice 3](docs/slice-3.md), [Slice 4](docs/slice-4.md), [the invalid question edit](tests/compile-fail/SwapQuestions.idr), and [the guarantee boundary](docs/architecture.md). The design note asked for a Haskell model with a LaTeX decisions document. [ADR 001](docs/adr/001-idris2.md) records the choice of Idris 2, which the note's Q5 left open: the key index is an advert *value*, not a phantom ID, and the hire morphism's provenance equality needs full dependent types as well. The decisions log is kept as Markdown ADRs in [`docs/adr/`](docs/adr/).
 
-The system has no legacy integration, paid API, real authentication, public candidate portal, persisted people record, or automated hiring decision. A real extractor can replace the mock through its existing typed port. The hire morphism runs end to end: a hire creates a people record whose provenance is typed in Idris and immutable in the database.
+The system has no legacy integration, paid API, real authentication, public candidate portal, persisted people record, or automated hiring decision. Since Slice 4 the web app reads text from an uploaded PDF at the extraction leaf (no OCR); a model-backed extractor can replace it through the same typed port. Sign-in is still the demo role switch; real authentication is deferred. The hire morphism runs end to end: a hire creates a people record whose provenance is typed in Idris and immutable in the database.

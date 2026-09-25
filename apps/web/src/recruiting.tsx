@@ -1,4 +1,4 @@
-import { IdCard, Lock, Plus, ShieldCheck, Trash2, X } from "lucide-react";
+import { ExternalLink, IdCard, Lock, Plus, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   AdvertSchema,
@@ -8,6 +8,7 @@ import type {
 } from "../../../packages/contracts/src/index";
 import {
   eraseApplication,
+  fetchCv,
   hireApplication,
   listPeople,
   reviewApplication,
@@ -391,6 +392,29 @@ function ApplicantDrawer({
     }
   }
 
+  // The CV is private, so it is fetched with the recruiter's identity and shown
+  // from memory. The tab is opened straight away so it is not blocked as a pop-up.
+  async function viewCv(): Promise<void> {
+    const tab = window.open("", "_blank");
+    setFailed(null);
+    try {
+      const url = URL.createObjectURL(await fetchCv(identity, record));
+      if (tab === null) {
+        // Pop-ups are blocked: download the file rather than leave the page.
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `cv-${record.reference}-${record.applicationId}.pdf`;
+        link.click();
+      } else {
+        tab.location.href = url;
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      tab?.close();
+      setFailed(describeError(error instanceof Error ? error.message : "request-failed"));
+    }
+  }
+
   return (
     <section className="drawer" aria-label="Applicant detail">
       <header className="drawer-header">
@@ -503,8 +527,23 @@ function ApplicantDrawer({
               </ul>
             </div>
             <div className="drawer-section">
-              <p className="eyebrow">CV text</p>
+              <div className="section-heading">
+                <p className="eyebrow">CV text</p>
+                {record.hasCvDocument ? (
+                  <button className="button small" type="button" onClick={() => void viewCv()}>
+                    View CV <ExternalLink size={14} aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
               <p className="cv-text">{record.cvText}</p>
+            </div>
+            <div className="drawer-section">
+              <p className="eyebrow">Cover letter</p>
+              {record.coverLetterText === null ? (
+                <p className="muted">No cover letter provided.</p>
+              ) : (
+                <p className="cv-text">{record.coverLetterText}</p>
+              )}
             </div>
           </>
         ) : (

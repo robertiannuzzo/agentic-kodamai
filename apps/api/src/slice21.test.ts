@@ -23,7 +23,7 @@ async function advertWithApplicants(running: RunningApplication): Promise<number
       role: "candidate",
       actor,
       method: "POST",
-      body: application({ candidateName: name })
+      form: application({ candidateName: name })
     });
     assert.equal(applied.status, 201);
   }
@@ -179,7 +179,7 @@ test("candidates can withdraw and recruiters can erase; scores and evidence surv
       role: "candidate",
       actor: "ada@example.test",
       method: "POST",
-      body: application()
+      form: application()
     });
     assert.equal(reapplied.status, 201);
   });
@@ -209,7 +209,7 @@ test("the public application endpoint is rate limited per candidate", async () =
       const advertised = await publish(running, await approvedRequisition(running));
       const path = `/api/adverts/${advertised.reference}/applications`;
       const attempt = () =>
-        request(running, path, { role: "candidate", actor: "spam@example.test", method: "POST", body: application() });
+        request(running, path, { role: "candidate", actor: "spam@example.test", method: "POST", form: application() });
       assert.equal((await attempt()).status, 201);
       assert.equal((await attempt()).status, 409);
       const limited = await attempt();

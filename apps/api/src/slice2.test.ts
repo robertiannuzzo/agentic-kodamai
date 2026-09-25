@@ -71,7 +71,7 @@ test("a recruiter publishes a frozen advert and applications are scored by the k
     const noNotice = await request(running, path, {
       ...candidate,
       method: "POST",
-      body: application({ acknowledgedPrivacyNotice: false })
+      form: application({ acknowledgedPrivacyNotice: false })
     });
     assert.deepEqual(noNotice.json, { error: "privacy-notice-required" });
 
@@ -80,7 +80,7 @@ test("a recruiter publishes a frozen advert and applications are scored by the k
       ...candidate,
       method: "POST",
       idempotencyKey: key,
-      body: application()
+      form: application()
     });
     assert.equal(applied.status, 201);
     assert.deepEqual(applied.json, {
@@ -93,10 +93,10 @@ test("a recruiter publishes a frozen advert and applications are scored by the k
       ...candidate,
       method: "POST",
       idempotencyKey: key,
-      body: application()
+      form: application()
     });
     assert.deepEqual(retried.json, applied.json);
-    const duplicate = await request(running, path, { ...candidate, method: "POST", body: application() });
+    const duplicate = await request(running, path, { ...candidate, method: "POST", form: application() });
     assert.equal(duplicate.status, 409);
     assert.deepEqual(duplicate.json, { error: "already-applied" });
 
@@ -104,7 +104,7 @@ test("a recruiter publishes a frozen advert and applications are scored by the k
       role: "candidate",
       actor: "bob@example.test",
       method: "POST",
-      body: application({ answers: [{ questionId: 2, answer: "yes" }, { questionId: 1, answer: "yes" }] })
+      form: application({ answers: [{ questionId: 2, answer: "yes" }, { questionId: 1, answer: "yes" }] })
     });
     assert.equal(mismatched.status, 400);
     assert.deepEqual(mismatched.json, { error: "answers-do-not-match-questions" });
@@ -119,7 +119,7 @@ test("a recruiter publishes a frozen advert and applications are scored by the k
         role: "candidate",
         actor: "grace@example.test",
         method: "POST",
-        body: application({
+        form: application({
           candidateName: "Grace Candidate",
           cvText: "Haskell",
           answers: [
@@ -186,7 +186,7 @@ test("a published schema is frozen in the database and checked again on replay",
       role: "candidate",
       actor: "ada@example.test",
       method: "POST",
-      body: application()
+      form: application()
     });
     assert.equal(refused.status, 500);
     const listed = await request(running, `/api/requisitions/${advertised.reference}/applications`, {
@@ -203,7 +203,7 @@ test("scored applications are immutable", async () => {
       role: "candidate",
       actor: "ada@example.test",
       method: "POST",
-      body: application()
+      form: application()
     });
     assert.equal(applied.status, 201);
     const database = new DatabaseSync(databasePath);
