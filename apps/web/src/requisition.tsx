@@ -246,7 +246,7 @@ const tabLabels: Record<Tab, string> = {
   requisition: "Requisition",
   advert: "Advert",
   applicants: "Applicants",
-  people: "People"
+  people: "Hires"
 };
 
 export function RequisitionView({

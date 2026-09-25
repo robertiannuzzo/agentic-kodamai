@@ -42,7 +42,7 @@ export function PublishAdvertForm({ busy, onPublish }: { busy: boolean; onPublis
       <p className="eyebrow">Recruiter action</p>
       <h2>Publish the advert</h2>
       <p className="lede">
-        Once published, the questions and skills can't be changed, so every applicant is scored the same way.
+        You can't edit the questions or skills after publishing, so every applicant is scored the same way.
       </p>
       <form className="form" onSubmit={(event) => void submit(event)}>
         <fieldset className="group">
@@ -169,7 +169,7 @@ export function AdvertPanel({ advert }: { advert: AdvertSchema }) {
         <Lock size={18} aria-hidden="true" className="muted-icon" />
       </div>
       <p className="lede">
-        These can't be changed now the advert is live, so everyone is scored against the same questions.
+        You can't edit these once the advert is published. That way, everyone who applies answers the same questions.
       </p>
       <table className="data-table">
         <thead>
@@ -301,7 +301,7 @@ function HireControl({
       <p className="eyebrow">
         <IdCard size={13} aria-hidden="true" /> Hire
       </p>
-      <p className="hint">This adds them to your people records, linked to this application.</p>
+      <p className="hint">This makes them an employee and keeps a link to their application.</p>
       <div className="form-grid">
         <label>
           Legal name
@@ -629,8 +629,8 @@ export function PeoplePanel({ identity, reference, hired }: { identity: DemoIden
 
   return (
     <section className="panel" aria-labelledby="people-title">
-      <p className="eyebrow">People</p>
-      <h2 id="people-title">Hired from this requisition</h2>
+      <p className="eyebrow">Hires</p>
+      <h2 id="people-title">Hired for this role</h2>
       <p className="lede">
         Everyone hired for this role, and how they were chosen.
       </p>
