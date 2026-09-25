@@ -1,6 +1,6 @@
 # Plan: Slice 4 — real sign-in, then PDF CV and cover letter
 
-Status: planned, not started. Written 2026-09-25 at the end of the Slice 3 / UI / copy work (main at `ea8f5c8`).
+Status: superseded by [the revised plan](plan-slice-4-revised.md), which dropped sign-in from this slice. Kept as history. Written 2026-09-25 at the end of the Slice 3 / UI / copy work (main at `ea8f5c8`).
 
 ## Where the project is
 
