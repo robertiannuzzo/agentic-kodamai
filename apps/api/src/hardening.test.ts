@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
@@ -7,6 +10,7 @@ import {
   approvedRequisition,
   publish,
   request,
+  start,
   withApplication,
   type RunningApplication
 } from "./test-support.js";
@@ -38,7 +42,7 @@ async function hiredAndWithdrawn(running: RunningApplication, candidate: string)
   return reference;
 }
 
-test("erasure leaves no candidate identity in any application or people response", async () => {
+test("erasure removes contact identity and notes; the employment record keeps only the legal name", async () => {
   await withApplication("erasure-identity", async (running) => {
     const candidate = "private@example.test";
     const reference = await hiredAndWithdrawn(running, candidate);
@@ -49,6 +53,11 @@ test("erasure leaves no candidate identity in any application or people response
       assert.ok(!serialised.includes(candidate), `candidate email leaked: ${serialised}`);
       assert.ok(!serialised.includes("Met Private"), "review note survived erasure");
     }
+    // The people record is an employment record retained under the contract of
+    // employment (documented exception): it keeps the legal name, nothing else.
+    const [person] = people.json as Array<{ legalName: string }>;
+    assert.equal(person?.legalName, "Private Person");
+    assert.ok(!JSON.stringify(applications.json).includes("Private Person"));
     const [record] = applications.json as Array<{ candidateActor: string; evidence: { actor: string } }>;
     assert.equal(record?.evidence.actor, record?.candidateActor);
     assert.match(record?.evidence.actor ?? "", /^erased:/u);
@@ -155,4 +164,123 @@ test("every provenance column is protected by its trigger", async () => {
       database.close();
     }
   });
+});
+
+test("erasure forgets cached review and hire responses, so a replay cannot re-expose them", async () => {
+  await withApplication("cached-replay", async (running) => {
+    const candidate = "cached@example.test";
+    const { reference } = await publish(running, await approvedRequisition(running));
+    await request(running, `/api/adverts/${reference}/applications`, {
+      role: "candidate",
+      actor: candidate,
+      method: "POST",
+      body: application({ candidateName: "Cached Person" })
+    });
+    const base = `/api/requisitions/${reference}/applications/1`;
+    const reviewKey = randomUUID();
+    const hireKey = randomUUID();
+    const reviewBody = { disposition: "shortlist", note: "Spoke to Cached" };
+    const hireBody = { legalName: "Cached Person", startDate: "2026-11-02" };
+    await request(running, `${base}/review`, { role: "recruiter", method: "POST", idempotencyKey: reviewKey, body: reviewBody });
+    await request(running, `${base}/hire`, { role: "recruiter", method: "POST", idempotencyKey: hireKey, body: hireBody });
+    await request(running, `/api/adverts/${reference}/applications/mine`, { role: "candidate", actor: candidate, method: "DELETE" });
+
+    const replays = [
+      await request(running, `${base}/review`, { role: "recruiter", method: "POST", idempotencyKey: reviewKey, body: reviewBody }),
+      await request(running, `${base}/hire`, { role: "recruiter", method: "POST", idempotencyKey: hireKey, body: hireBody })
+    ];
+    for (const replay of replays) {
+      const serialised = JSON.stringify(replay.json);
+      assert.ok(!serialised.includes(candidate), `replay leaked the email: ${serialised}`);
+      assert.ok(!serialised.includes("Spoke to Cached"), `replay leaked the note: ${serialised}`);
+      assert.equal(replay.status, 409);
+    }
+  });
+});
+
+test("concurrent identical applications share one result under an exhausted rate limit", async () => {
+  await withApplication(
+    "concurrent",
+    async (running) => {
+      const { reference } = await publish(running, await approvedRequisition(running));
+      const key = randomUUID();
+      const send = () =>
+        request(running, `/api/adverts/${reference}/applications`, {
+          role: "candidate",
+          actor: "twice@example.test",
+          method: "POST",
+          idempotencyKey: key,
+          body: application()
+        });
+      const [first, second] = await Promise.all([send(), send()]);
+      assert.equal(first?.status, 201);
+      assert.equal(second?.status, 201);
+      assert.deepEqual(first?.json, second?.json);
+    },
+    { applyRateLimit: { perCandidate: 1, perAddress: 100, windowMs: 60_000 } }
+  );
+});
+
+test("upgrading a database erased before migration 7 repairs it and drops its cached responses", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "agentic-kodamai-upgrade-"));
+  const databasePath = join(directory, "upgrade.sqlite");
+  const candidate = "legacy@example.test";
+  try {
+    let running = await start(databasePath, { maintenanceIntervalMs: 0 });
+    let reference: number;
+    try {
+      ({ reference } = await publish(running, await approvedRequisition(running)));
+      await request(running, `/api/adverts/${reference}/applications`, {
+        role: "candidate",
+        actor: candidate,
+        method: "POST",
+        body: application()
+      });
+      await request(running, `/api/requisitions/${reference}/applications/1/review`, {
+        role: "recruiter",
+        method: "POST",
+        body: { disposition: "shortlist", note: "Legacy note" }
+      });
+      await request(running, `/api/adverts/${reference}/applications/mine`, { role: "candidate", actor: candidate, method: "DELETE" });
+    } finally {
+      await running.application.close();
+    }
+
+    // Recreate the state a migration-6 erasure left behind: the email in the
+    // scoring evidence and a cached review response carrying it.
+    const database = new DatabaseSync(databasePath);
+    database.exec(`
+      DROP TRIGGER applications_erasure_only;
+      UPDATE applications SET evidence_actor = '${candidate}';
+      CREATE TRIGGER applications_erasure_only BEFORE UPDATE ON applications BEGIN SELECT 1; END;
+      DELETE FROM schema_migrations WHERE version >= 7;
+    `);
+    database
+      .prepare(`INSERT INTO idempotency_records
+        (tenant_id, actor, idempotency_key, operation, request_fingerprint, response_payload, created_at)
+        VALUES ('demo', 'recruiter@example.test', 'legacy-key-1', ?, 'x', ?, ?)`)
+      .run(`review-application:${reference}:1`, JSON.stringify({ note: "Legacy note", actor: candidate }), Date.now());
+    database.close();
+
+    running = await start(databasePath, { maintenanceIntervalMs: 0 });
+    try {
+      const listed = await request(running, `/api/requisitions/${reference}/applications`, { role: "recruiter" });
+      assert.ok(!JSON.stringify(listed.json).includes(candidate));
+    } finally {
+      await running.application.close();
+    }
+    const upgraded = new DatabaseSync(databasePath);
+    try {
+      const cached = upgraded
+        .prepare("SELECT COUNT(*) AS count FROM idempotency_records WHERE response_payload LIKE ?")
+        .get(`%${candidate}%`) as { count: number };
+      assert.equal(Number(cached.count), 0);
+      const versions = upgraded.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number };
+      assert.equal(Number(versions.version), 8);
+    } finally {
+      upgraded.close();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

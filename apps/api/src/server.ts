@@ -471,17 +471,20 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
     // and must not spend rate-limit capacity or be refused by it.
     const replayed = store.applicationIdempotencyResult(context);
     if (replayed !== null) return replayed;
-    const now = Date.now();
     const address = request.socket.remoteAddress ?? "unknown";
-    if (
-      !candidateLimiter.allow(`${user.tenantId}:${user.actor}`, now) ||
-      !addressLimiter.allow(address, now)
-    ) {
-      throw new HttpError(429, "rate-limited");
-    }
     return serialize(async () => {
+      // Re-check inside the serialised section: a concurrent duplicate of this
+      // request may have completed while this one waited, and it must replay
+      // rather than spend (or be refused by) rate-limit capacity.
       const prior = store.applicationIdempotencyResult(context);
       if (prior !== null) return prior;
+      const now = Date.now();
+      if (
+        !candidateLimiter.allow(`${user.tenantId}:${user.actor}`, now) ||
+        !addressLimiter.allow(address, now)
+      ) {
+        throw new HttpError(429, "rate-limited");
+      }
       const advertised = store.get(user.tenantId, reference);
       if (advertised === null || advertised.stage !== "advertising") throw new HttpError(404, "not-found");
       if (store.openAdverts(user.tenantId, user.actor).some((advert) => advert.reference === reference && advert.applied)) {

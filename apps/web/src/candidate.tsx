@@ -104,6 +104,10 @@ function ApplyForm({
               We keep your application for {advert.retentionDays} days, then remove your personal data
               automatically. You can withdraw and erase it at any time from this page.
             </li>
+            <li>
+              If you are hired, your employment record is kept separately under your contract of employment;
+              withdrawing erases the application, not that record.
+            </li>
           </ul>
         </section>
         <label className="checkbox">
@@ -140,6 +144,7 @@ export function CandidateWorkspace({
   const load = useCallback(async () => {
     const current = ++generation.current;
     setAdverts([]);
+    setBusy(false);
     setLoading(true);
     setError(null);
     try {
@@ -164,36 +169,42 @@ export function CandidateWorkspace({
 
   useEffect(() => setConfirmingWithdrawal(false), [selected, identity]);
 
+  // Actions for one candidate must not change what the next candidate sees:
+  // a result that arrives after the identity changed is dropped.
   async function withdraw(): Promise<void> {
     if (advert === null) return;
+    const current = generation.current;
+    const reference = advert.reference;
     setBusy(true);
     setError(null);
     try {
-      await withdrawApplication(identity, advert.reference);
-      setAdverts((current) =>
-        current.map((a) => (a.reference === advert.reference ? { ...a, applied: false } : a))
-      );
+      await withdrawApplication(identity, reference);
+      if (current !== generation.current) return;
+      setAdverts((existing) => existing.map((a) => (a.reference === reference ? { ...a, applied: false } : a)));
       setConfirmingWithdrawal(false);
     } catch (failure) {
+      if (current !== generation.current) return;
       setError(describeError(failure instanceof Error ? failure.message : "request-failed"));
     } finally {
-      setBusy(false);
+      if (current === generation.current) setBusy(false);
     }
   }
 
   async function apply(submission: ApplicationSubmission): Promise<void> {
     if (advert === null) return;
+    const current = generation.current;
+    const reference = advert.reference;
     setBusy(true);
     setError(null);
     try {
-      await applyToAdvert(identity, advert.reference, submission);
-      setAdverts((current) =>
-        current.map((a) => (a.reference === advert.reference ? { ...a, applied: true } : a))
-      );
+      await applyToAdvert(identity, reference, submission);
+      if (current !== generation.current) return;
+      setAdverts((existing) => existing.map((a) => (a.reference === reference ? { ...a, applied: true } : a)));
     } catch (failure) {
+      if (current !== generation.current) return;
       setError(describeError(failure instanceof Error ? failure.message : "request-failed"));
     } finally {
-      setBusy(false);
+      if (current === generation.current) setBusy(false);
     }
   }
 
@@ -278,7 +289,7 @@ export function CandidateWorkspace({
                 <div className="actions withdraw-row">
                   {confirmingWithdrawal ? (
                     <>
-                      <span className="muted">This erases your name, email, CV and answers.</span>
+                      <span className="muted">This erases the personal data in your application: name, email, CV and answers.</span>
                       <button className="button danger" disabled={busy} onClick={() => void withdraw()}>
                         Confirm withdrawal
                       </button>

@@ -717,7 +717,7 @@ export class RecruitmentStore {
           WHERE tenant_id = ? AND reference = ? AND application_id = ?`)
         .get(tenantId, reference, applicationId) as Row | undefined;
       if (row === undefined) return false;
-      this.forgetIdempotency(tenantId, requiredString(row.candidate_actor), reference);
+      this.forgetIdempotency(tenantId, requiredString(row.candidate_actor), reference, applicationId);
       this.eraseRow(reference, applicationId, reason, now);
       return true;
     });
@@ -731,17 +731,25 @@ export class RecruitmentStore {
           WHERE tenant_id = ? AND reference = ? AND candidate_actor = ? AND erased_at IS NULL`)
         .get(tenantId, reference, candidateActor) as Row | undefined;
       if (row === undefined) return false;
-      this.forgetIdempotency(tenantId, candidateActor, reference);
-      this.eraseRow(reference, natural(row.application_id), "withdrawn by candidate", now);
+      const applicationId = natural(row.application_id);
+      this.forgetIdempotency(tenantId, candidateActor, reference, applicationId);
+      this.eraseRow(reference, applicationId, "withdrawn by candidate", now);
       return true;
     });
   }
 
-  /** Idempotency keys are scoped by actor, which for a candidate is personal data. */
-  private forgetIdempotency(tenantId: string, candidateActor: string, reference: number): void {
+  /**
+   * Forget cached responses that could re-expose an erased application: the
+   * candidate's own (keyed by their email) and any recruiter's review or hire
+   * of it, which carry the email, reason and note.
+   */
+  private forgetIdempotency(tenantId: string, candidateActor: string, reference: number, applicationId: number): void {
     this.database
       .prepare("DELETE FROM idempotency_records WHERE tenant_id = ? AND actor = ? AND operation = ?")
       .run(tenantId, candidateActor, `apply:${reference}`);
+    this.database
+      .prepare("DELETE FROM idempotency_records WHERE tenant_id = ? AND operation IN (?, ?)")
+      .run(tenantId, `review-application:${reference}:${applicationId}`, `hire:${reference}:${applicationId}`);
   }
 
   /** Anonymise applications older than the retention period. */
@@ -753,8 +761,9 @@ export class RecruitmentStore {
         .all(now - retentionMs) as Row[];
       for (const row of expired) {
         const reference = natural(row.reference);
-        this.forgetIdempotency(requiredString(row.tenant_id), requiredString(row.candidate_actor), reference);
-        this.eraseRow(reference, natural(row.application_id), "retention period ended", now);
+        const applicationId = natural(row.application_id);
+        this.forgetIdempotency(requiredString(row.tenant_id), requiredString(row.candidate_actor), reference, applicationId);
+        this.eraseRow(reference, applicationId, "retention period ended", now);
       }
       return expired.length;
     });
