@@ -81,6 +81,9 @@ export interface HireCommit {
 
 export const ERASED_NAME = "Erased candidate";
 
+/** `PRAGMA user_version` once free pages from earlier releases were scrubbed. */
+const SCRUBBED_STORAGE_VERSION = 1;
+
 type Row = Record<string, unknown>;
 
 function sameAudit(left: AuditEntry, right: AuditEntry): boolean {
@@ -223,12 +226,28 @@ export class RecruitmentStore {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.database = new DatabaseSync(path);
     this.database.exec(`
-      PRAGMA foreign_keys = ON;
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = FULL;
       PRAGMA busy_timeout = 5000;
+      PRAGMA foreign_keys = ON;
+      PRAGMA secure_delete = ON;
+      PRAGMA journal_mode = DELETE;
+      PRAGMA synchronous = FULL;
     `);
     migrate(this.database);
+    this.scrubFreedPages();
+  }
+
+  /**
+   * With secure_delete on, erased data is overwritten as it is removed. Files
+   * written by earlier releases (without it, and in WAL mode) can still hold
+   * erased data in free pages, so they are rebuilt once with VACUUM. The
+   * marker is recorded only after VACUUM succeeds; a failure is retried on the
+   * next start.
+   */
+  private scrubFreedPages(): void {
+    const version = this.database.prepare("PRAGMA user_version").get() as { user_version: number };
+    if (Number(version.user_version) >= SCRUBBED_STORAGE_VERSION) return;
+    this.database.exec("VACUUM");
+    this.database.exec(`PRAGMA user_version = ${SCRUBBED_STORAGE_VERSION}`);
   }
 
   close(): void {

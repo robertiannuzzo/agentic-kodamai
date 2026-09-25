@@ -1391,7 +1391,17 @@ label.checkbox input {
 
 /* Applicant detail slide-over */
 
+/* A modal <dialog>: undo the browser's centred, content-sized defaults so it
+   stays a panel pinned to the right, whose body scrolls. */
 .drawer {
+  color: var(--text);
+  height: auto;
+  left: auto;
+  margin: 0;
+  max-height: none;
+  max-width: none;
+  overflow: hidden;
+  padding: 0;
   background: var(--surface-2);
   border: 1px solid var(--line-strong);
   border-radius: 20px;
@@ -1404,6 +1414,10 @@ label.checkbox input {
   top: 96px;
   width: min(460px, calc(100vw - 32px));
   z-index: 25;
+}
+
+.drawer::backdrop {
+  background: rgba(0, 0, 0, 0.35);
 }
 
 @media (prefers-reduced-motion: no-preference) {

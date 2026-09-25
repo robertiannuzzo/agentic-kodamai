@@ -52,6 +52,7 @@ export function FieldForm({
   busy,
   currency,
   onSubmit,
+  onDirtyChange,
   onCancel
 }: {
   initial: RequisitionFields;
@@ -59,6 +60,7 @@ export function FieldForm({
   busy: boolean;
   currency: DisplayCurrency;
   onSubmit(fields: RequisitionFields): Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
   onCancel?: () => void;
 }) {
   const [value, setValue] = useState(initial);
@@ -68,6 +70,14 @@ export function FieldForm({
     setValue(initial);
     setBudget(String(initial.budgetMinor / 100));
   }, [initial]);
+
+  useEffect(() => {
+    onDirtyChange?.(
+      value.role !== initial.role || value.department !== initial.department ||
+      value.headcount !== initial.headcount || value.justification !== initial.justification ||
+      Math.round(Number(budget) * 100) !== initial.budgetMinor
+    );
+  }, [value, budget, initial, onDirtyChange]);
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -273,6 +283,7 @@ export function RequisitionView({
   const [tab, setTab] = useState<Tab>(defaultTab(role, row));
   const [records, setRecords] = useState<ApplicationRecord[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [draftDirty, setDraftDirty] = useState(false);
   const showsApplicants = role === "recruiter" && row.stage === "advertising";
 
   const loadApplications = useCallback(async () => {
@@ -343,12 +354,24 @@ export function RequisitionView({
             {tabs.map((option) => (
               <button
                 role="tab"
+                tabIndex={activeTab === option ? 0 : -1}
                 aria-selected={activeTab === option}
                 aria-controls={`panel-${option}`}
                 id={`tab-${option}`}
                 className={activeTab === option ? "active" : ""}
                 key={option}
                 onClick={() => setTab(option)}
+                onKeyDown={(event) => {
+                  const index = tabs.indexOf(option);
+                  const next = event.key === "ArrowRight" ? tabs[(index + 1) % tabs.length]
+                    : event.key === "ArrowLeft" ? tabs[(index + tabs.length - 1) % tabs.length]
+                    : event.key === "Home" ? tabs[0]
+                    : event.key === "End" ? tabs[tabs.length - 1] : undefined;
+                  if (next === undefined) return;
+                  event.preventDefault();
+                  setTab(next);
+                  document.getElementById(`tab-${next}`)?.focus();
+                }}
               >
                 {tabLabels[option]}
                 {option === "applicants" && records !== null ? <span className="count">{records.length}</span> : null}
@@ -374,16 +397,18 @@ export function RequisitionView({
                       busy={busy}
                       currency={currency}
                       initial={row}
+                      onDirtyChange={setDraftDirty}
                       onSubmit={(value) => perform(() => updateDraft(identity, row, value), "Draft saved")}
                     />
                     <div className="submit-row">
                       <div>
                         <strong>Ready for review?</strong>
                         <p>Once submitted, it can't be edited unless the approver asks for changes.</p>
+                        {draftDirty ? <p role="status">Save your changes before submitting.</p> : null}
                       </div>
                       <button
                         className="button primary"
-                        disabled={busy}
+                        disabled={busy || draftDirty}
                         onClick={() => void perform(() => submitDraft(identity, row), "Submitted for review")}
                       >
                         Submit requisition

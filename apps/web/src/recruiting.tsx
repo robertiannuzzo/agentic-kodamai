@@ -1,5 +1,5 @@
 import { ExternalLink, IdCard, Lock, Plus, ShieldCheck, Trash2, X } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type {
   AdvertSchema,
   ApplicationRecord,
@@ -369,14 +369,27 @@ function ApplicantDrawer({
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const decision = decisionOf(record);
+  const dialog = useRef<HTMLDialogElement>(null);
+  // What had focus when the panel opened; the first render's value is kept.
+  const opener = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  const applicationId = record.applicationId;
 
+  // A modal dialog keeps keyboard focus inside the panel while it is open.
+  // Removing it from the page closes it; focus then returns to the row that
+  // opened it. If the view was redrawn meanwhile (a hire that fills the
+  // requisition does this), focus goes to that applicant's row, or to the
+  // Applications heading while the list reloads.
   useEffect(() => {
-    function close(event: KeyboardEvent): void {
-      if (event.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", close);
-    return () => document.removeEventListener("keydown", close);
-  }, [onClose]);
+    const element = dialog.current;
+    if (element !== null && !element.open) element.showModal();
+    return () => {
+      const trigger = opener.current?.isConnected
+        ? opener.current
+        : (document.querySelector<HTMLElement>(`[data-application-id="${applicationId}"]`) ??
+          document.getElementById("applications-title"));
+      trigger?.focus();
+    };
+  }, [applicationId]);
 
   async function act(operation: () => Promise<unknown>, message: string): Promise<void> {
     setBusy(true);
@@ -416,7 +429,7 @@ function ApplicantDrawer({
   }
 
   return (
-    <section className="drawer" aria-label="Applicant detail">
+    <dialog ref={dialog} className="drawer" aria-label="Applicant detail" onClose={onClose}>
       <header className="drawer-header">
         <span className="avatar large" aria-hidden="true">
           {record.erasedAt === null ? initials(record.candidateName) : "—"}
@@ -560,7 +573,7 @@ function ApplicantDrawer({
           />
         ) : null}
       </div>
-    </section>
+    </dialog>
   );
 }
 
@@ -587,7 +600,7 @@ export function ApplicantsBoard({
       <div className="panel-heading">
         <div>
           <p className="eyebrow">Review</p>
-          <h2 id="applications-title">Applications</h2>
+          <h2 id="applications-title" tabIndex={-1}>Applications</h2>
         </div>
         <div className="legend" aria-label="Score components">
           {components.map((part) => (
@@ -614,7 +627,11 @@ export function ApplicantsBoard({
               className={record.applicationId === selectedId ? "selected" : ""}
               key={record.applicationId}
             >
-              <button className="applicant-row" onClick={() => setSelectedId(record.applicationId)}>
+              <button
+                className="applicant-row"
+                data-application-id={record.applicationId}
+                onClick={() => setSelectedId(record.applicationId)}
+              >
                 <span className="avatar" aria-hidden="true">
                   {record.erasedAt === null ? initials(record.candidateName) : "—"}
                 </span>

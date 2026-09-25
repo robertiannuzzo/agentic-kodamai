@@ -100,7 +100,7 @@ createDraft repo c fields state = do
   _ <- newDraft fields
   let ref = repo.nextReference state
   if ref == 0 then Left InvalidReference else do
-    let evidence = MkEvidence c ref 0 fields.justification
+    let evidence = MkEvidence c ref 0 (fieldsSnapshot fields)
     let row = MkCaseRecord ref 0 (Drafting fields)
                 [(DraftCreated ** evidence)]
     updated <- repo.commit Nothing row state
@@ -128,7 +128,7 @@ updateDraft repo ref expected c fields state = do
   _ <- newDraft fields
   case row.stage of
     Drafting _ => saveNext repo row (Drafting fields)
-      [(DraftUpdated ** MkEvidence c ref 0 fields.justification)] state
+      [(DraftUpdated ** MkEvidence c ref 0 (fieldsSnapshot fields))] state
     _ => Left WrongStage
 
 ||| Submission freezes the current draft as revision zero and sends it to review.

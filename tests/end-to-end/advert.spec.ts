@@ -113,8 +113,25 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(applications.nth(1)).toContainText("Grace Hopper");
   await expect(applications.nth(1).getByTestId("total")).toHaveText("20 / 49");
   // Selecting a row opens the applicant detail panel with the workings.
-  const detail = page.getByRole("region", { name: "Applicant detail" });
-  await applications.nth(0).getByText("Ada Lovelace").click();
+  const detail = page.getByRole("dialog", { name: "Applicant detail" });
+  const adaButton = applications.nth(0).getByRole("button");
+  await adaButton.focus();
+  await page.keyboard.press("Enter");
+  await expect(detail.getByRole("button", { name: "Close applicant detail" })).toBeFocused();
+  // The panel is modal: the page behind it cannot be reached, and Tab and
+  // Shift+Tab stay inside it.
+  expect(await detail.evaluate((element) => element.matches(":modal"))).toBe(true);
+  for (const key of [...Array<string>(25).fill("Tab"), ...Array<string>(25).fill("Shift+Tab")]) {
+    await page.keyboard.press(key);
+    const inside = await detail.evaluate(
+      (element) => document.activeElement === document.body || element.contains(document.activeElement)
+    );
+    expect(inside, `focus left the panel after ${key}`).toBe(true);
+  }
+  await page.keyboard.press("Escape");
+  await expect(detail).toHaveCount(0);
+  await expect(adaButton).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(detail).toContainText("keywords5");
   await expect(detail).toContainText("experience18");
   await expect(detail).toContainText("policy:recruitment-score-v1");
@@ -135,6 +152,7 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await detail.getByRole("button", { name: "Shortlist" }).click();
   await expect(applications.nth(0).getByTestId("decision")).toHaveText("Shortlisted");
   await expect(detail).toContainText("application:1;total:46;disposition:shortlist");
+  await detail.getByRole("button", { name: "Close applicant detail" }).click();
   await applications.nth(1).getByText("Grace Hopper").click();
   await expect(detail).toContainText("No cover letter provided.");
   await detail.getByRole("button", { name: "Reject" }).click();
@@ -164,14 +182,23 @@ test("an approved requisition is advertised, applied to and reviewed with score 
   await expect(detail.getByRole("button", { name: "View CV" })).toHaveCount(0);
   await expect(detail).not.toContainText("Cover letter");
 
+  await detail.getByRole("button", { name: "Close applicant detail" }).click();
+
   // Hire the shortlisted candidate: a people record with provenance, and the requisition fills.
   await applications.nth(0).getByText("Ada Lovelace").click();
   await detail.getByLabel("Start date").fill("2026-11-02");
   await detail.getByRole("button", { name: "Hire" }).click();
   await expect(page.getByTestId("stage")).toHaveText("Filled");
+  // Filling the requisition redraws the view; focus lands on the list, not the page body.
+  await expect(detail).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Applications" })).toBeFocused();
   await expect(applications.nth(0).getByTestId("decision")).toHaveText("Hired · EMP-0001");
   await expect(page.getByRole("list", { name: "Recruitment chain" })).toContainText("1 of 1");
-  await page.getByRole("tab", { name: /Hires/ }).click();
+  const applicantsTab = page.getByRole("tab", { name: /Applicants/ });
+  await applicantsTab.focus();
+  await page.keyboard.press("End");
+  await expect(page.getByRole("tab", { name: /Hires/ })).toBeFocused();
+  await expect(page.getByRole("tab", { name: /Hires/ })).toHaveAttribute("aria-selected", "true");
   const provenance = page.getByRole("list", { name: "Provenance of Ada Lovelace" });
   await expect(provenance).toContainText("Score 46");
   await expect(provenance).toContainText("disposition:shortlist");

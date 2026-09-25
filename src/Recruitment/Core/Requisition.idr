@@ -14,6 +14,16 @@ record Fields where
   budgetMinor : Nat
   justification : String
 
+||| Complete, unambiguous snapshot. Lengths count Unicode characters, as on
+||| the worker boundary. A justification alone cannot bind an approval.
+public export
+fieldsSnapshot : Fields -> String
+fieldsSnapshot f = "requisition-fields-v1:" ++ concat (map framed
+  [f.role, f.department, show f.headcount, show f.budgetMinor, f.justification])
+  where
+    framed : String -> String
+    framed value = show (length (unpack value)) ++ ":" ++ value ++ ","
+
 public export
 record Req where
   constructor MkReq
@@ -68,7 +78,7 @@ submit c fresh draft = do
         RevisedDraft ref rev f => (ref, rev, f)
   let (ref, rev, f) = info
   if ref == 0 then Left InvalidReference else
-    Right (MkReq ref rev f ** Awaiting (MkEvidence c ref rev f.justification))
+    Right (MkReq ref rev f ** Awaiting (MkEvidence c ref rev (fieldsSnapshot f)))
 
 export
 submissionEvidence : Pending r -> Evidence Submitted
@@ -162,8 +172,15 @@ walk ref phase (fact :: rest) = do
   next <- step ref phase fact
   walk ref next rest
 
+||| Submissions since the full-field snapshot bind all five fields. Earlier
+||| submissions recorded only the justification; they are still accepted, with
+||| that weaker check, so existing requisitions and their applicants keep working.
 submittedAs : Fields -> Evidence Submitted -> Either DomainError ()
-submittedAs f s = if s.detail == f.justification then Right () else Left InvalidHistory
+submittedAs f s =
+  let bound = if isPrefixOf "requisition-fields-v1:" s.detail
+                then s.detail == fieldsSnapshot f
+                else s.detail == f.justification
+  in if bound then Right () else Left InvalidHistory
 
 ||| Checked reconstruction for persistence boundaries. Witnesses are rebuilt only
 ||| when the whole trail is a run of the transitions above: every fact targets this
@@ -177,7 +194,10 @@ replay ref f history = do
   phase <- walk ref Empty history
   case phase of
     Editing justification =>
-      if justification == f.justification then Right (InDraft f) else Left InvalidHistory
+      -- Drafts saved before the snapshot recorded only the justification.
+      -- Saving or submitting one records the full snapshot from then on.
+      if justification == fieldsSnapshot f || justification == f.justification
+        then Right (InDraft f) else Left InvalidHistory
     Reviewing rev s => do
       submittedAs f s; Right (InReview (MkReq ref rev f) (Awaiting s))
     Reworking rev s held => do
