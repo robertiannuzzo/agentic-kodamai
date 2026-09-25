@@ -315,7 +315,6 @@ export function CandidateWorkspace({
             </div>
             <p className="lede">
               {advert.questions.length} screening {advert.questions.length === 1 ? "question" : "questions"}.
-              Every application is read by a person.
             </p>
             {advert.applied ? (
               <>
