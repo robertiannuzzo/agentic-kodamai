@@ -31,7 +31,7 @@ import {
   updateDraft,
   type DemoIdentity
 } from "./api";
-import { formatMoney, formatTime, reference, type DisplayCurrency } from "./format";
+import { displayName, formatMoney, formatTime, reference, type DisplayCurrency } from "./format";
 import { describeError } from "./messages";
 import { AdvertPanel, ApplicantsBoard, PeoplePanel, PublishAdvertForm } from "./recruiting";
 import {
@@ -231,7 +231,7 @@ function EvidenceRail({ history }: { history: AuditEntry[] }) {
                 <strong data-testid="event">{entry.event.replaceAll("-", " ")}</strong>
                 <p className={raw ? "raw" : ""}>{raw ? entry.detail : describeEvidence(entry)}</p>
                 <small title={entry.actor}>
-                  {entry.actor.replace(/@.*/u, "")} · rev {entry.revision} · {formatTime(entry.tick)}
+                  {displayName(entry.actor)} · rev {entry.revision} · {formatTime(entry.tick)}
                 </small>
               </div>
             </li>
@@ -331,7 +331,7 @@ export function RequisitionView({
           </div>
           <div>
             <dt>Requested by</dt>
-            <dd>{row.requesterId.replace(/@.*/u, "")}</dd>
+            <dd>{displayName(row.requesterId)}</dd>
           </div>
         </dl>
         <StageRail steps={railSteps(row, records?.length ?? null)} />

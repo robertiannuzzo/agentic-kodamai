@@ -14,7 +14,7 @@ import {
   type AdvertDraft,
   type DemoIdentity
 } from "./api";
-import { employeeReference, initials } from "./format";
+import { displayName, employeeReference, initials } from "./format";
 import { describeError } from "./messages";
 
 const blankQuestion = { prompt: "", expected: "" };
@@ -456,7 +456,7 @@ function ApplicantDrawer({
             </p>
             <p>
               <strong>{record.review.disposition === "shortlist" ? "Shortlisted" : "Rejected"}</strong> by{" "}
-              {record.review.evidence.actor}
+              {displayName(record.review.evidence.actor)}
             </p>
             {record.review.reason === "" ? null : <p>Reason: {record.review.reason}</p>}
             {record.review.note === "" ? null : <p>Note: {record.review.note}</p>}
@@ -656,12 +656,12 @@ export function PeoplePanel({ identity, reference, hired }: { identity: DemoIden
               </li>
               <li>
                 <span className="eyebrow">Shortlisted</span>
-                <span>by {person.provenance.shortlist.actor}</span>
+                <span>by {displayName(person.provenance.shortlist.actor)}</span>
                 <code>{person.provenance.shortlist.detail}</code>
               </li>
               <li>
                 <span className="eyebrow">Hired</span>
-                <span>by {person.evidence.actor}</span>
+                <span>by {displayName(person.evidence.actor)}</span>
                 <code>{person.evidence.detail}</code>
               </li>
             </ol>

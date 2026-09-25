@@ -26,6 +26,21 @@ export function employeeReference(value: number): string {
   return `EMP-${String(value).padStart(4, "0")}`;
 }
 
+/**
+ * A readable name for a person identified by email: "grace.field@example.test"
+ * becomes "Grace Field", "approver@kodamai.test" becomes "Approver". Erased
+ * pseudonyms are shown as-is.
+ */
+export function displayName(actor: string): string {
+  if (actor.startsWith("erased:")) return "Erased candidate";
+  return actor
+    .replace(/@.*/u, "")
+    .split(/[._-]+/u)
+    .filter((part) => part !== "")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 export function initials(name: string): string {
   const parts = name.replace(/@.*/u, "").split(/[\s._-]+/u).filter((part) => part !== "");
   return (parts.length === 0 ? "?" : parts.slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join(""));
