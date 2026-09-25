@@ -6,13 +6,17 @@ import { applyToAdvert, listOpenAdverts, withdrawApplication, type DemoIdentity 
 function ApplyForm({
   advert,
   busy,
+  defaultEmail,
   onApply
 }: {
   advert: OpenAdvert;
   busy: boolean;
-  onApply(submission: ApplicationSubmission): Promise<void>;
+  defaultEmail: string;
+  onApply(submission: ApplicationSubmission, email: string): Promise<void>;
 }) {
-  const [candidateName, setCandidateName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState(defaultEmail);
   const [cvText, setCvText] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [answers, setAnswers] = useState<Record<number, string>>({});
@@ -20,13 +24,16 @@ function ApplyForm({
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
-    await onApply({
-      candidateName,
-      cvText,
-      acknowledgedPrivacyNotice: acknowledged,
-      answers: advert.questions.map(({ questionId }) => ({ questionId, answer: answers[questionId] ?? "" })),
-      years: advert.skills.map(({ skillId }) => ({ skillId, years: Number(years[skillId] ?? "0") }))
-    });
+    await onApply(
+      {
+        candidateName: `${firstName.trim()} ${lastName.trim()}`,
+        cvText,
+        acknowledgedPrivacyNotice: acknowledged,
+        answers: advert.questions.map(({ questionId }) => ({ questionId, answer: answers[questionId] ?? "" })),
+        years: advert.skills.map(({ skillId }) => ({ skillId, years: Number(years[skillId] ?? "0") }))
+      },
+      email.trim()
+    );
   }
 
   return (
@@ -35,9 +42,35 @@ function ApplyForm({
         <legend>
           <span className="step-number">01</span> About you
         </legend>
+        <div className="form-grid">
+          <label>
+            First name
+            <input
+              required
+              autoComplete="given-name"
+              value={firstName}
+              onChange={(event) => setFirstName(event.target.value)}
+            />
+          </label>
+          <label>
+            Last name
+            <input
+              required
+              autoComplete="family-name"
+              value={lastName}
+              onChange={(event) => setLastName(event.target.value)}
+            />
+          </label>
+        </div>
         <label>
-          Full name
-          <input required value={candidateName} onChange={(event) => setCandidateName(event.target.value)} />
+          Email
+          <input
+            required
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+          />
         </label>
       </fieldset>
       <fieldset className="group">
@@ -126,10 +159,13 @@ function ApplyForm({
 
 export function CandidateWorkspace({
   identity,
-  describeError
+  describeError,
+  onIdentity
 }: {
   identity: DemoIdentity;
   describeError(code: string): string;
+  /** The email an application is submitted with becomes the candidate identity. */
+  onIdentity(email: string): void;
 }) {
   const [adverts, setAdverts] = useState<OpenAdvert[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
@@ -189,15 +225,20 @@ export function CandidateWorkspace({
     }
   }
 
-  async function apply(submission: ApplicationSubmission): Promise<void> {
+  async function apply(submission: ApplicationSubmission, email: string): Promise<void> {
     if (advert === null) return;
     const current = generation.current;
     const reference = advert.reference;
     setBusy(true);
     setError(null);
     try {
-      await applyToAdvert(identity, reference, submission);
+      await applyToAdvert({ ...identity, actor: email }, reference, submission);
       if (current !== generation.current) return;
+      if (email !== identity.actor) {
+        // Switching identity reloads the roles for that email, marked applied.
+        onIdentity(email);
+        return;
+      }
       setAdverts((existing) => existing.map((a) => (a.reference === reference ? { ...a, applied: true } : a)));
     } catch (failure) {
       if (current !== generation.current) return;
@@ -304,7 +345,13 @@ export function CandidateWorkspace({
                 </div>
               </>
             ) : (
-              <ApplyForm key={advert.reference} advert={advert} busy={busy} onApply={apply} />
+              <ApplyForm
+                key={`${advert.reference}:${identity.actor}`}
+                advert={advert}
+                busy={busy}
+                defaultEmail={identity.actor}
+                onApply={apply}
+              />
             )}
           </section>
         )}

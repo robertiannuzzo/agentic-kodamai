@@ -136,6 +136,7 @@ export function Topbar({
             <span className="label">Applying as</span>
             <input
               aria-label="Candidate email"
+              key={candidateEmail}
               defaultValue={candidateEmail}
               type="email"
               onBlur={(event) => onCandidateEmail(event.target.value.trim())}

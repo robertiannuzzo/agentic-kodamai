@@ -16,7 +16,10 @@ async function applyAs(
   await identity.fill(email);
   await identity.press("Enter");
   await page.getByRole("navigation", { name: "Open roles" }).getByRole("button", { name: /Compiler Engineer/ }).click();
-  await page.getByLabel("Full name").fill(details.name);
+  const [first, ...rest] = details.name.split(" ");
+  await page.getByLabel("First name").fill(first ?? "");
+  await page.getByLabel("Last name").fill(rest.join(" "));
+  await expect(page.getByLabel("Email", { exact: true })).toHaveValue(email);
   await page.getByLabel("Can you work in the UK time zone?").fill(details.answers[0]);
   await page.getByLabel("Do you use typed programming?").fill(details.answers[1]);
   await page.getByLabel("idris", { exact: true }).fill(details.years[0]);

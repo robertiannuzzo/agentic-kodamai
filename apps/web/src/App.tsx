@@ -162,7 +162,7 @@ export function App() {
       />
 
       {role === "candidate" ? (
-        <CandidateWorkspace identity={identity} describeError={describeError} />
+        <CandidateWorkspace identity={identity} describeError={describeError} onIdentity={setCandidateEmail} />
       ) : (
         <div className="workspace">
           <aside className="sidebar">
