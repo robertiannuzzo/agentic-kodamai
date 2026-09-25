@@ -803,7 +803,7 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         requireRole(user.role, "requester");
         const input = await body(request);
         const key = idempotencyKey(request);
-        const result = await mutate(user, key, "update-draft", input, () => {
+        const result = await mutate(user, key, "update-draft", { reference, input }, () => {
           const current = accessible(user, reference, true);
           return {
             current,
@@ -829,7 +829,7 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         requireRole(user.role, "requester");
         const input = await body(request);
         const key = idempotencyKey(request);
-        const result = await mutate(user, key, "submit-draft", input, () => {
+        const result = await mutate(user, key, "submit-draft", { reference, input }, () => {
           const current = accessible(user, reference, true);
           return {
             current,
@@ -858,7 +858,7 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         if (!["approve", "decline", "hold"].includes(decision)) {
           throw new HttpError(400, "invalid-decision");
         }
-        const result = await mutate(user, key, "review", input, () => {
+        const result = await mutate(user, key, "review", { reference, input }, () => {
           const current = accessible(user, reference, false);
           return {
             current,
@@ -885,7 +885,7 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         requireRole(user.role, "requester");
         const input = await body(request);
         const key = idempotencyKey(request);
-        const result = await mutate(user, key, "resubmit", input, () => {
+        const result = await mutate(user, key, "resubmit", { reference, input }, () => {
           const current = accessible(user, reference, true);
           return {
             current,
@@ -912,7 +912,7 @@ export async function createApplication(options: ApplicationOptions): Promise<Ap
         const input = await body(request);
         const key = idempotencyKey(request);
         const schema = advertSchema(input);
-        const result = await mutate(user, key, "publish", input, () => {
+        const result = await mutate(user, key, "publish", { reference, input }, () => {
           const current = accessible(user, reference, false);
           return {
             current,

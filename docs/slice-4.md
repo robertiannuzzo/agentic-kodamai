@@ -19,7 +19,7 @@ and the composition root answers `ExtractionC` with `storedDocument locator vers
 | `version` | SHA-256 of the text | SHA-256 of the PDF bytes |
 | `locator` | `cv://tenant/reference/application` | Unchanged |
 
-PDF parsing (`unpdf`, a packaging of Mozilla's pdf.js) runs in the API process on untrusted bytes. Its output is only ever a string handed to the kernel as the stored document's text, so a hostile or odd PDF can at worst produce odd text. It cannot reach scoring except through the same typed path pasted text took. The Ada journey still scores 46 / 49.
+PDF parsing (`unpdf`, a packaging of Mozilla's pdf.js) runs in the API process on untrusted bytes. Its output is only ever a string handed to the kernel as the stored document's text, so it cannot reach scoring except through the same typed path pasted text took. That bounds what a hostile PDF can do to a score, not what it can do to the process: the parser runs in-process without a hard timeout, so a crafted file could still consume CPU or memory within the size and page limits, or exercise a flaw in pdf.js itself. Isolating it in a worker with a timeout is a disclosed follow-up (see Limits). The Ada journey still scores 46 / 49.
 
 ## Accepting a CV
 

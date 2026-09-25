@@ -43,7 +43,7 @@ workflowTests =
        (r ** pending) <- submit context 42 draft
        let ev = submissionEvidence pending
        Right (r.reference == 42 && r.revision == 0 && ev.reference == 42 &&
-              ev.context.actor == "tester" && ev.context.tick == 10 && ev.detail == exampleFields.justification)))
+              ev.context.actor == "tester" && ev.context.tick == 10 && ev.detail == fieldsSnapshot exampleFields)))
   , ("zero reference refused", ok (do
        draft <- newDraft exampleFields
        Right (fails "invalid-reference" (submit context 0 draft))))
@@ -252,7 +252,7 @@ generatedTest n = ("generated years/round-trip invariant " ++ show n, withAdvert
          b.completeness == 3 && roundTrip raw)))
 
 submitted : Nat -> Fact
-submitted rev = (Submitted ** MkEvidence context 1 rev exampleFields.justification)
+submitted rev = (Submitted ** MkEvidence context 1 rev (fieldsSnapshot exampleFields))
 
 approvedBy : Context -> Nat -> Fact
 approvedBy c rev = (ApprovedEvent ** MkEvidence c 1 rev "approved")
@@ -296,6 +296,23 @@ dutyAndReplayTests =
        (restoreStage 2 exampleFields Nothing [submitted 0, approvedBy reviewer 0]))
   , ("replay refuses fields that were never submitted", fails "invalid-history"
        (restoreStage 1 (MkFields "R" "D" 1 1 "Swapped") Nothing [submitted 0, approvedBy reviewer 0]))
+  , ("replay binds every submitted field", all (\changed => fails "invalid-history"
+       (restoreStage 1 changed Nothing [submitted 0, approvedBy reviewer 0]))
+       [ { role := "Changed role" } exampleFields
+       , { department := "Changed department" } exampleFields
+       , { headcount := S exampleFields.headcount } exampleFields
+       , { budgetMinor := S exampleFields.budgetMinor } exampleFields
+       , { justification := "Changed justification" } exampleFields ])
+  , ("an approval recorded before snapshots still replays on its justification", ok (do
+       stage <- restoreStage 1 exampleFields Nothing
+         [(Submitted ** MkEvidence context 1 0 exampleFields.justification), approvedBy reviewer 0]
+       Right (isAccepted stage)))
+  , ("an approval recorded before snapshots refuses a changed justification", fails "invalid-history"
+       (restoreStage 1 ({ justification := "Changed justification" } exampleFields) Nothing
+         [(Submitted ** MkEvidence context 1 0 exampleFields.justification), approvedBy reviewer 0]))
+  , ("snapshots preserve Unicode and delimiter boundaries",
+       fieldsSnapshot (MkFields "R:🎼," "D" 1 1 "J\n") /=
+       fieldsSnapshot (MkFields "R" ":🎼,D" 1 1 "J\n"))
   , ("replay refuses empty history", fails "invalid-history" (restoreStage 1 exampleFields Nothing []))
   , ("replay accepts legitimate approval", ok (do
        stage <- restoreStage 1 exampleFields Nothing [submitted 0, approvedBy reviewer 0]

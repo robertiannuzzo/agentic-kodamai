@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { request as httpRequest } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ApplicationRecord, DemoRole } from "../../../packages/contracts/src/index.js";
 import {
   application,
@@ -235,4 +238,140 @@ test("the database refuses to change a cover letter or delete a linked CV outsid
       database.close();
     }
   });
+});
+
+const boundary = "kodamai-test-boundary";
+
+function part(name: string, filename: string | null, content: string | Buffer): Buffer {
+  const disposition = `form-data; name="${name}"${filename === null ? "" : `; filename="${filename}"`}`;
+  const type = filename === null ? "" : "Content-Type: application/pdf\r\n";
+  return Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: ${disposition}\r\n${type}\r\n`),
+    Buffer.isBuffer(content) ? content : Buffer.from(content),
+    Buffer.from("\r\n")
+  ]);
+}
+
+/** Send a raw multipart body, which may stop mid-part, and read the reply. */
+function rawUpload(origin: string, body: Buffer): Promise<{ status: number; json: unknown }> {
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(
+      `${origin}/api/adverts/1/applications`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": `multipart/form-data; boundary=${boundary}`,
+          "content-length": String(body.length),
+          "x-demo-role": "candidate",
+          "x-demo-actor": "malformed@example.test",
+          "x-demo-tenant": "demo",
+          "idempotency-key": randomUUID()
+        }
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () =>
+          resolve({ status: response.statusCode ?? 0, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) })
+        );
+      }
+    );
+    // The server may answer before the whole body is sent; that is expected.
+    outgoing.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE" && error.code !== "ECONNRESET") reject(error);
+    });
+    outgoing.end(body);
+  });
+}
+
+/** Start sending an upload, then drop the connection part-way through. */
+function abandonUpload(origin: string): Promise<void> {
+  return new Promise((resolve) => {
+    const outgoing = httpRequest(`${origin}/api/adverts/1/applications`, {
+      method: "POST",
+      headers: {
+        "content-type": `multipart/form-data; boundary=${boundary}`,
+        "content-length": "100000",
+        "x-demo-role": "candidate",
+        "x-demo-actor": "abandoned@example.test",
+        "x-demo-tenant": "demo",
+        "idempotency-key": randomUUID()
+      }
+    });
+    outgoing.on("error", () => undefined);
+    outgoing.write(part("cv", "cv.pdf", "%PDF-1.7 partial"));
+    setTimeout(() => {
+      outgoing.destroy();
+      resolve();
+    }, 50);
+  });
+}
+
+test("malformed and abandoned uploads are refused without stopping the server", { timeout: 30_000 }, async () => {
+  await withApplication("malformed-upload", async (running, databasePath) => {
+    const reference = await advert(running);
+    assert.equal(reference, 1);
+    const truncatedCv = part("cv", "cv.pdf", "%PDF-1.7 truncated").subarray(0, -2);
+    const cases: Array<[string, Buffer, number, string]> = [
+      ["a CV part with no closing boundary", truncatedCv, 400, "invalid-multipart"],
+      [
+        "a second CV cut short",
+        Buffer.concat([part("cv", "one.pdf", pdf(["One"])), truncatedCv]),
+        400,
+        "too-many-cvs"
+      ],
+      ["an unexpected file cut short", part("photo", "photo.pdf", "%PDF-1.7 cut").subarray(0, -2), 400, "unexpected-file"],
+      [
+        "an oversized CV cut short",
+        part("cv", "big.pdf", Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.alloc(5 * 1024 * 1024 + 10)])).subarray(0, -2),
+        413,
+        "cv-too-large"
+      ]
+    ];
+    for (const [label, body, status, error] of cases) {
+      const refused = await rawUpload(running.origin, body);
+      assert.equal(refused.status, status, label);
+      assert.deepEqual(refused.json, { error }, label);
+    }
+    await abandonUpload(running.origin);
+    const repeated = await Promise.all(Array.from({ length: 20 }, () => rawUpload(running.origin, truncatedCv)));
+    assert.ok(repeated.every(({ status }) => status === 400));
+
+    const health = await fetch(`${running.origin}/api/health`);
+    assert.equal(health.status, 200);
+    assert.equal(documentCount(databasePath), 0);
+    // A good upload still works afterwards.
+    assert.equal((await apply(running, reference, "after@example.test")).status, 201);
+  });
+});
+
+test("a truncated upload does not end a separate server process", { timeout: 30_000 }, async () => {
+  const server = fileURLToPath(new URL("./server.js", import.meta.url));
+  const child = spawn(
+    process.execPath,
+    [
+      "--no-warnings",
+      "--input-type=module",
+      "-e",
+      `const { createApplication } = await import(${JSON.stringify(server)});
+       const app = await createApplication({ databasePath: ":memory:", maintenanceIntervalMs: 0 });
+       app.server.listen(0, "127.0.0.1", () => console.log(app.server.address().port));`
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+  try {
+    const port = await new Promise<number>((resolve, reject) => {
+      child.stdout.once("data", (chunk: Buffer) => resolve(Number(chunk.toString().trim())));
+      child.once("exit", (code) => reject(new Error(`server exited early (${code}): ${stderr}`)));
+    });
+    const origin = `http://127.0.0.1:${port}`;
+    const refused = await rawUpload(origin, part("cv", "cv.pdf", "%PDF-1.7 truncated").subarray(0, -2));
+    assert.equal(refused.status, 400);
+    assert.equal((await fetch(`${origin}/api/health`)).status, 200);
+    assert.equal(child.exitCode, null, stderr);
+  } finally {
+    child.kill();
+  }
 });

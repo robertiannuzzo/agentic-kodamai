@@ -67,19 +67,27 @@ export function readApplicationUpload(request: IncomingMessage): Promise<Applica
       if (failure !== null) return;
       failure = error;
       request.unpipe(parser);
+      // A size-limit event occurs inside Busboy's write callback; destroy only
+      // after that callback returns, so its active file isn't cleared mid-write.
+      queueMicrotask(() => parser.destroy());
       // Discard the rest of the body without keeping it.
       request.resume();
       reject(error);
     };
 
     parser.on("file", (name, stream) => {
+      // Busboy reports a truncated part on both the parser and FileStream.
+      // Every stream, including refused files, needs its own error listener.
+      stream.on("error", () => fail(new UploadError(400, "invalid-multipart")));
       if (name !== "cv" || cv !== null) {
         stream.resume();
         fail(new UploadError(400, name === "cv" ? "too-many-cvs" : "unexpected-file"));
         return;
       }
       const chunks: Buffer[] = [];
-      stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+      stream.on("data", (chunk: Buffer) => {
+        if (failure === null) chunks.push(chunk);
+      });
       stream.on("limit", () => fail(new UploadError(413, "cv-too-large")));
       stream.on("end", () => {
         if (failure === null) cv = Buffer.concat(chunks);
@@ -123,6 +131,7 @@ export function readApplicationUpload(request: IncomingMessage): Promise<Applica
       });
     });
     request.on("aborted", () => fail(new UploadError(400, "invalid-multipart")));
+    request.on("error", () => fail(new UploadError(400, "invalid-multipart")));
     request.pipe(parser);
   });
 }

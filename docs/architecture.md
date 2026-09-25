@@ -4,18 +4,20 @@
 
 One application, a small mathematical-container module, a pure domain core, application services and deterministic adapters. The preparation documents motivate prompt-dependent replies and composable handlers. The implemented container algebra is described in [the walkthrough](containers.md).
 
-Slice 1 introduces a React interface and TypeScript HTTP boundary for requisitions and approvals. Protected writes cross a versioned process boundary into the compiled Idris workflow executable. Slice 1.1 makes transactional SQLite state authoritative, retains append-only audit facts, and asks Idris to check and transition one aggregate per write. See [the Slice 1 design](slice-1.md). Slice 2 adds recruiter publication, candidate applications and scored review through one kernel container; see [the Slice 2 design](slice-2.md).
+Slice 1 introduces a React interface and TypeScript HTTP boundary for requisitions and approvals. Protected writes cross a versioned process boundary into the compiled Idris workflow executable. Slice 1.1 makes transactional SQLite state authoritative, retains append-only audit facts, and asks Idris to check and transition one aggregate per write. See [the Slice 1 design](slice-1.md). Slice 2 adds recruiter publication, candidate applications and scored review through one kernel container; see [the Slice 2 design](slice-2.md). Slice 2.1 adds recorded human decisions, withdrawal, erasure and retention ([Slice 2.1](slice-2-1.md)); Slice 3 persists hires as people records with provenance ([Slice 3](slice-3.md)); Slice 4 replaces pasted CV text with an uploaded PDF read at the extraction leaf ([Slice 4](slice-4.md)).
 
 ```mermaid
 flowchart LR
-  Web[React requester / approver UI] --> API[TypeScript HTTP boundary]
+  Web[React UI: requester, approver, recruiter, candidate] --> API[TypeScript HTTP boundary]
+  API --> PDF[PDF text reader: untrusted leaf input]
   API --> Worker[Idris workflow executable]
-  Worker --> Kernel[kernelAgent: TransitionC + IntakeC]
+  Worker --> Kernel[kernelAgent: TransitionC + IntakeC + AssessC + HireKC]
   Kernel --> Transition[TransitionC dispatch handler + Sum of command agents]
   Kernel --> IntakeChain[IntakeC handler: validate, extract leaf, application, score]
+  Kernel --> Decisions[AssessC and HireKC: re-derive score, decision, hire]
   Transition --> Workflow[Workflow use cases]
   IntakeChain --> Core
-  API --> SQLite[(SQLite state + audit + idempotency)]
+  API --> SQLite[(SQLite state, audit, applications, CV files, people, idempotency)]
   CLI[CLI demonstration] --> Spine[Composed container spine]
   Spine --> Core[Pure typed domain core]
   CLI --> Intake[Application intake]
@@ -26,7 +28,7 @@ flowchart LR
   Intake --> Extractor[CV extraction port]
   Cases --> CaseMemory[In-memory cases]
   Scores --> Memory[In-memory receipts]
-  Extractor --> Mock[Mock versioned CV lookup]
+  Extractor --> Mock[Mock versioned CV lookup, CLI only]
 ```
 
 `Core` imports only other core modules and bundled pure data libraries. It has no IO, clock, filesystem, SQL, HTTP, provider SDK, or application-service imports. A lint check guards that dependency direction. Every domain and application module uses `%default total`; the package uses `--total -Werror` and the hygiene check rejects unsafe proof escapes and holes.
@@ -39,13 +41,13 @@ flowchart LR
 4. `receive` returns `Application a`. `Answers (questionsOf a)` and `Experience (skillsOf a)` follow the actual ordered lists, including their contents. Raw entries must name every ID exactly once in the advertised order; missing, extra, duplicate, or reordered entries fail validation. Blank answers and empty extracted CV text are allowed so completeness can measure them. A CV locator and immutable version are required.
 5. `compute` returns an opaque `Score a`, retaining the application and four-part breakdown. `applyAndScore` performs validation, extraction, application construction, scoring and required evidence within the repository's score-once operation. The score itself produces no hiring outcome.
 
-Stage 2 preview: `Core.Hire.hire` is the design note's missing morphism. Given a `Score a`, it returns `(e : Employee ** provenanceOf e = (a ** scoredApplication s))`. `Employee` has a private constructor, so an employee cannot exist without the scored application it came from, and a reply of bare status changes ("onboarding to follow") does not typecheck. It is exercised by the CLI and tests; the people record is not yet persisted.
+Stage 2, the hire: `Core.Hire.hire` is the design note's missing morphism. Given a `Score a`, it returns `(e : Employee ** provenanceOf e = (a ** scoredApplication s))`. `Employee` has a private constructor, so an employee cannot exist without the scored application it came from, and a reply of bare status changes ("onboarding to follow") does not typecheck. Since Slice 3 the web app runs it through the kernel's `HireKC` branch and persists the result as an immutable people record; see [Slice 3](slice-3.md).
 
 The type of `Extractor.extract` is `(input : CVInput) -> Either DomainError (CVText input)`: its reply depends on its prompt. The repository and workflow APIs similarly use prompt-dependent values. `ExtractionC` and `extractionAgent` expose that port as a mathematical container and direct-answer handler. The five-link `Spine` composes domain agents with sequence and sum; operational use cases retain state across separate actions.
 
 ## Persistence and concurrency
 
-SQLite stores current requisition state, ordinal append-only audit entries, recorded schema migrations, reference allocation, and actor-scoped idempotency responses. For each protected write, TypeScript loads one tenant-scoped aggregate and sends it with the proposed command through protocol v2. Idris does not trust the stored stage label: it replays the aggregate's complete audit trail through the requisition transitions (`Requisition.replay`) and rebuilds `Pending`, `Held`, or `Approved` only if every fact targets this reference and the right revision, events occur in a legal order, no reviewer ruled on their own submission, and the current fields match what was submitted. The stored stage and revision must then agree with the replayed ones. It then applies one transition through `transitionAgent`, whose reply `Next ref generation` is indexed by the targeted requisition and the generation it must reach. A database transaction compare-and-swaps the generation and commits state, new evidence, and the idempotent response together. In-process serialization improves local behavior; the database transaction and uniqueness constraint handle competing local processes. PostgreSQL transactions and database-enforced tenant constraints remain required for horizontal deployment.
+SQLite stores current requisition state, ordinal append-only audit entries, recorded schema migrations, reference allocation, and actor-scoped idempotency responses. For each protected write, TypeScript loads one tenant-scoped aggregate and sends it with the proposed command through the versioned worker protocol (`recruitment-kernel-v5`). Idris does not trust the stored stage label: it replays the aggregate's complete audit trail through the requisition transitions (`Requisition.replay`) and rebuilds `Pending`, `Held`, or `Approved` only if every fact targets this reference and the right revision, events occur in a legal order, no reviewer ruled on their own submission, and the current fields match what was submitted. Submission evidence records a length-prefixed snapshot of all five fields (role, department, headcount, budget, justification), so changing any of them after approval is refused. Submissions recorded before that snapshot existed held only the justification; they are still accepted, checked on the justification alone (ADR 012). The stored stage and revision must then agree with the replayed ones. It then applies one transition through `transitionAgent`, whose reply `Next ref generation` is indexed by the targeted requisition and the generation it must reach. A database transaction compare-and-swaps the generation and commits state, new evidence, and the idempotent response together. In-process serialization improves local behavior; the database transaction and uniqueness constraint handle competing local processes. PostgreSQL transactions and database-enforced tenant constraints remain required for horizontal deployment.
 
 The former unversioned command log is not a source of truth. Migration 3 preserves it as `legacy_command_log`; newer releases do not replay historical requests under changed business rules. This chooses transactional state plus audit over full event sourcing. Revisit that choice only if a bounded part of the domain gains a concrete need for temporal reconstruction beyond the audit record.
 
@@ -53,7 +55,7 @@ The former unversioned command log is not a source of truth. Migration 3 preserv
 
 `Repository a state` is scoped to an immutable advert. Its `commitOnce` contract uses application ID as the key and compares the complete raw payload. An equal retry returns the original receipt without invoking extraction or scoring; a different payload is an idempotency conflict. A new receipt and its audit evidence are committed together. The in-memory adapter uses immutable state and a delayed computation to implement this sequentially. It cannot implement cross-process transactions or durability.
 
-The future database adapter must use unique constraints, transactional generation checks, immutable advert snapshots, and an atomic application/score/audit transaction. CV versions must resolve to immutable content. For expensive external extraction, design explicit pending/complete states or an outbox; do not hold a database transaction open across an unbounded model call. Exactly-once external execution after a crash is not promised here.
+The SQLite adapter provides these for one local instance: unique constraints, transactional generation checks, triggers that freeze published adverts and scored applications (except for erasure), and one transaction per application covering the score, its evidence and the uploaded CV file. CV versions are the SHA-256 of the stored PDF. A hosted release still needs the same guarantees from PostgreSQL. For expensive external extraction, design explicit pending/complete states or an outbox; do not hold a database transaction open across an unbounded model call. Exactly-once external execution after a crash is not promised here.
 
 ## Compiler guarantees and their limits
 
@@ -109,8 +111,15 @@ Errors are an algebraic data type, never exception strings inside the core. Thei
 | `InvalidEncoding` | Invalid/unsupported/out-of-bounds wire input |
 | `NotFound`, `StaleVersion`, `WrongStage` | Missing aggregate, concurrent/stale request, invalid transition |
 | `SelfReview` | The submitter of a revision attempted to rule on it |
-| `InvalidHistory` | A persisted audit trail is not a legal run of the transitions |
+| `InvalidHistory` | A persisted audit trail is not a legal run of the transitions, or the fields no longer match what was submitted |
+| `NotShortlisted` | A hire was asked for an application that was not shortlisted |
 
 ## Assumptions for this slice
 
-Budgets use one installation-wide currency, expressed in minor units; no foreign exchange. Years are whole nonnegative years, not dates. Context carries an externally supplied actor and logical timestamp (`Nat`), not an authenticated identity or a trusted wall clock. Mock CV input is versioned text lookup, not file upload. Decline is terminal; only hold permits rework. There is no edit-after-publication API. These choices are intentional scope limits for phase 1.
+Budgets use one installation-wide currency, expressed in minor units; no foreign exchange. Years are whole nonnegative years, not dates. Context carries an externally supplied actor and logical timestamp (`Nat`), not an authenticated identity or a trusted wall clock. In the CLI, CV input is a mock versioned text lookup; the web app reads text from an uploaded PDF (no OCR). Decline is terminal; only hold permits rework. There is no edit-after-publication API. These choices are intentional scope limits for phase 1.
+
+## Erasure on disk
+
+Erasing an application (withdrawal, a recruiter's request or the retention period) clears or deletes its personal data in one transaction. SQLite runs with `secure_delete` on, so removed content is overwritten in the database file rather than left in free space, and with a rollback journal instead of WAL, so no write-ahead log keeps old page images after a commit. A database written by an earlier release is rebuilt once with `VACUUM` at startup, to scrub free pages left before `secure_delete`; this is recorded in `PRAGMA user_version` only after it succeeds, so a failure is retried on the next start. Tests read the raw database file after each kind of erasure and restart, and find no trace of the erased values.
+
+This covers the database's own files. It cannot erase copies outside them: filesystem snapshots, blocks the filesystem has not reused (including deleted rollback journals), backups, or a CV a recruiter has already downloaded. This demo makes no automatic backups of candidate data; any copy an operator makes must follow the same erasure and retention rules, or be deleted. Wiping storage hardware is out of scope.

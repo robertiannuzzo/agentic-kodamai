@@ -36,6 +36,8 @@ test("requester and approver complete the rework-and-approval journey", async ({
   await expect(page.getByTestId("stage")).toHaveText("Draft");
 
   await fillFields(page, { headcount: "2" });
+  await expect(page.getByRole("button", { name: "Submit requisition" })).toBeDisabled();
+  await expect(page.getByRole("status")).toContainText("Save your changes before submitting");
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByTestId("headcount")).toHaveText("2");
 
@@ -119,4 +121,62 @@ test("a declined requisition is terminal for both roles", async ({ page }) => {
   await expect(page.getByTestId("stage")).toHaveText("Declined");
   await expect(page.getByRole("button", { name: "Revise and resubmit" })).toHaveCount(0);
   await expect(page.getByText("No budget this quarter.")).toBeVisible();
+});
+
+test("a draft with unsaved edits cannot be submitted until they are saved", async ({ page }) => {
+  await page.goto("/");
+  await viewAs(page, "Requester");
+  await page.getByRole("button", { name: "New requisition" }).click();
+  const saved = { role: "Data Engineer", department: "Data", headcount: "1", budget: "70000", justification: "Own the pipelines." };
+  await fillFields(page, saved);
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(page.getByTestId("stage")).toHaveText("Draft");
+
+  const submit = page.getByRole("button", { name: "Submit requisition" });
+  const reminder = page.getByText("Save your changes before submitting.");
+  await expect(submit).toBeEnabled();
+
+  // Any edited field blocks submission; putting the value back unblocks it.
+  const edits: Array<[keyof typeof saved, string]> = [
+    ["role", "Senior Data Engineer"],
+    ["department", "Analytics"],
+    ["headcount", "3"],
+    ["budget", "90000"],
+    ["justification", "Own the pipelines and the warehouse."]
+  ];
+  for (const [field, value] of edits) {
+    await fillFields(page, { [field]: value });
+    await expect(submit, field).toBeDisabled();
+    await expect(reminder, field).toBeVisible();
+    await fillFields(page, { [field]: saved[field] });
+    await expect(submit, field).toBeEnabled();
+    await expect(reminder, field).toHaveCount(0);
+  }
+
+  // A failed save keeps the edits on screen and submission blocked.
+  await fillFields(page, { role: "Lead Data Engineer", budget: "95000" });
+  await page.route("**/api/requisitions/*", (route) =>
+    route.request().method() === "PUT"
+      ? route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"internal-server-error"}' })
+      : route.fallback()
+  );
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByLabel("Role title")).toHaveValue("Lead Data Engineer");
+  await expect(submit).toBeDisabled();
+  await page.unroute("**/api/requisitions/*");
+
+  // Saving unblocks submission, and what is submitted is what was saved.
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByRole("heading", { name: "Lead Data Engineer", level: 1 })).toBeVisible();
+  await expect(submit).toBeEnabled();
+  await submit.click();
+  await expect(page.getByTestId("stage")).toHaveText("Awaiting review");
+
+  await page.reload();
+  await viewAs(page, "Approver");
+  await page.getByRole("navigation", { name: "Awaiting your review" })
+    .getByRole("button", { name: /Lead Data Engineer/ })
+    .click();
+  await expect(page.getByRole("heading", { name: "Lead Data Engineer", level: 1 })).toBeVisible();
+  await expect(page.getByText("£95,000").first()).toBeVisible();
 });
