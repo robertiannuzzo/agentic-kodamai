@@ -138,7 +138,7 @@ The PDF parser runs in the API process. Size, page and request-rate limits reduc
 
 ## Compiler-enforced relationships
 
-The core uses mathematical containers, as in *Containers for Typed Agentic AI*: each prompt determines its permitted reply type, and handlers compose through `Seq`, `Sum`, `Tensor` and `Product`. "Container" always means this abstraction here; the repository has no Docker or other deployment containers.
+The core uses mathematical containers, as in *Containers for Typed Agentic AI*: each prompt determines its permitted reply type, and handlers compose through `Seq`, `Sum`, `Tensor` and `Product`.
 
 Examples of enforced relationships:
 
